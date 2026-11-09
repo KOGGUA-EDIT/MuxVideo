@@ -1,0 +1,184 @@
+//! Gestures on the native video surfaces.
+//!
+//! The planes are real Win32 windows, so egui never sees these clicks; the
+//! input hook in [`crate::video`] queues them and this module turns the raw
+//! stream into the interactions a review player is expected to have:
+//!
+//! * click — play / pause
+//! * drag — move the window (like mpv's `--window-dragging`)
+//! * drag in wipe mode — move the split line
+//! * middle drag — pan the picture (RV style)
+//! * wheel — volume, `Ctrl`+wheel — zoom
+//! * double click — fullscreen
+
+use std::time::{Duration, Instant};
+
+use eframe::egui;
+
+use crate::video::MouseEvent;
+
+use super::MuxApp;
+use super::stage::Plane;
+use super::state::{CompareMode, Toast};
+
+/// Longer than this and a press is not a click any more.
+const CLICK_MAX_MS: u64 = 400;
+/// Movement (physical pixels) that turns a press into a drag.
+const DRAG_SLOP: i32 = 5;
+/// Volume per wheel notch, in mpv volume units.
+const VOLUME_STEP: f64 = 4.0;
+/// Zoom per wheel notch.
+const ZOOM_STEP: f64 = 0.10;
+const ZOOM_MIN: f64 = -2.0;
+const ZOOM_MAX: f64 = 3.0;
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    /// Left press that moves the window once it leaves the slop radius.
+    Window,
+    /// Left press that moves the wipe split line.
+    Wipe,
+    /// Middle press that pans the picture.
+    Pan,
+}
+
+pub(crate) struct Drag {
+    plane: Plane,
+    mode: Mode,
+    start: (i32, i32),
+    last: (i32, i32),
+    moved: bool,
+    began: Instant,
+}
+
+/// Per-frame entry point: drains the native input queue into player actions.
+pub(super) fn pump(app: &mut MuxApp, ctx: &egui::Context) {
+    let events = crate::video::take_input_events();
+    if events.is_empty() {
+        return;
+    }
+    for event in events {
+        let Some(plane) = app.media.plane_for_hwnd(event.hwnd) else {
+            // The stage container and the toplevel get the bubbled-up copies.
+            continue;
+        };
+        match event.event {
+            MouseEvent::Down { x, y, button } => press(app, plane, x, y, button),
+            MouseEvent::Move { x, y } => drag_to(app, ctx, x, y),
+            MouseEvent::Up { .. } => release(app),
+            MouseEvent::DoubleClick => {
+                app.gesture = None;
+                app.suppress_click = Some(Instant::now());
+                toggle_fullscreen(app, ctx);
+            }
+            MouseEvent::Wheel { delta } => wheel(app, ctx, delta),
+            MouseEvent::Leave => {}
+        }
+    }
+}
+
+fn press(app: &mut MuxApp, plane: Plane, x: i32, y: i32, button: u8) {
+    let mode = match button {
+        0 if app.settings.mode == CompareMode::Wipe => Mode::Wipe,
+        0 => Mode::Window,
+        2 => Mode::Pan,
+        _ => return,
+    };
+    app.gesture = Some(Drag {
+        plane,
+        mode,
+        start: (x, y),
+        last: (x, y),
+        moved: false,
+        began: Instant::now(),
+    });
+}
+
+fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
+    let Some(drag) = app.gesture.as_mut() else {
+        return;
+    };
+    let (dx, dy) = (x - drag.last.0, y - drag.last.1);
+    drag.last = (x, y);
+    let (tx, ty) = (x - drag.start.0, y - drag.start.1);
+    if !drag.moved && (tx.abs() > DRAG_SLOP || ty.abs() > DRAG_SLOP) {
+        drag.moved = true;
+        if drag.mode == Mode::Window {
+            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        }
+    }
+    if !drag.moved {
+        return;
+    }
+    match drag.mode {
+        Mode::Wipe => {
+            if let Some((w, _)) = app.media.plane_size(drag.plane) {
+                let frac = (x as f32 / w.max(1) as f32).clamp(0.02, 0.98);
+                app.settings.wipe = frac;
+                app.settings_dirty = true;
+            }
+        }
+        Mode::Pan => {
+            if let Some((w, h)) = app.media.plane_size(drag.plane) {
+                let sx = dx as f64 / w.max(1) as f64;
+                let sy = dy as f64 / h.max(1) as f64;
+                app.pan = (
+                    (app.pan.0 + sx).clamp(-2.0, 2.0),
+                    (app.pan.1 + sy).clamp(-2.0, 2.0),
+                );
+                app.media.apply_pan_zoom(app.pan, app.zoom);
+            }
+        }
+        Mode::Window => {}
+    }
+}
+
+fn release(app: &mut MuxApp) {
+    let Some(drag) = app.gesture.take() else {
+        return;
+    };
+    let quick = drag.began.elapsed() < Duration::from_millis(CLICK_MAX_MS);
+    let suppressed = app
+        .suppress_click
+        .is_some_and(|at| at.elapsed() < Duration::from_millis(CLICK_MAX_MS));
+    if !drag.moved && drag.mode == Mode::Window && quick && !suppressed {
+        app.suppress_click = None;
+        app.toggle_play();
+    }
+}
+
+fn wheel(app: &mut MuxApp, ctx: &egui::Context, delta: i32) {
+    let notches = f64::from(delta) / 120.0;
+    if notches == 0.0 {
+        return;
+    }
+    let ctrl = ctx.input(|i| i.modifiers.ctrl);
+    if ctrl {
+        app.zoom = (app.zoom + notches * ZOOM_STEP).clamp(ZOOM_MIN, ZOOM_MAX);
+        app.media.apply_pan_zoom(app.pan, app.zoom);
+        app.toast = Some(Toast::info(format!("缩放 {:+.0}%", app.zoom * 100.0)));
+        return;
+    }
+    let next = (app.settings.volume + notches * VOLUME_STEP).clamp(0.0, 130.0);
+    if (next - app.settings.volume).abs() < 0.01 {
+        return;
+    }
+    app.settings.volume = next;
+    app.settings.muted = false;
+    app.apply_volume();
+    app.toast = Some(Toast::info(format!("音量 {:.0}%", next)));
+}
+
+fn toggle_fullscreen(app: &mut MuxApp, ctx: &egui::Context) {
+    let _ = app;
+    let full = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
+    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
+}
+
+/// Used by the settings panel to reset pan/zoom.
+#[allow(dead_code)] // kit primitive
+pub(crate) fn reset_view(app: &mut MuxApp) {
+    app.pan = (0.0, 0.0);
+    app.zoom = 0.0;
+    app.media.apply_pan_zoom(app.pan, app.zoom);
+}

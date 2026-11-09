@@ -3,6 +3,7 @@
 mod bars;
 mod controls;
 pub mod icons;
+mod input;
 mod open_dialog;
 mod panels;
 pub mod stage;
@@ -29,6 +30,8 @@ pub(super) const RAIL_W: f32 = 88.0;
 pub(super) const TRANSPORT_H: f32 = 112.0;
 /// Width of the playlist side panel.
 pub(super) const PLAYLIST_W: f32 = 328.0;
+/// How long flicker comparison holds one input before switching (seconds).
+const BLINK_HALF_SECS: f64 = 0.45;
 
 /// Which plane a freshly opened file goes to.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -63,10 +66,19 @@ pub struct MuxApp {
 
     /// Scrub position while the progress slider is being dragged.
     pub(super) scrub: Option<f64>,
+    /// Gesture in progress on a native video surface.
+    pub(super) gesture: Option<input::Drag>,
+    /// Set after a double click so its trailing press is not read as a click.
+    pub(super) suppress_click: Option<Instant>,
+    /// Picture pan/zoom (RV style), applied to every plane.
+    pub(super) pan: (f64, f64),
+    pub(super) zoom: f64,
     /// Files to open on the first frame, when the native window already exists.
     pending: Vec<(PathBuf, Target)>,
     /// Whether the DWM frame attributes were already applied.
     frame_dressed: bool,
+    /// Start of the flicker clock (CompareMode::Blink).
+    blink_clock: Instant,
 }
 
 impl MuxApp {
@@ -112,8 +124,13 @@ impl MuxApp {
             settings_dirty: false,
             last_save: Instant::now(),
             scrub: None,
+            gesture: None,
+            suppress_click: None,
+            pan: (0.0, 0.0),
+            zoom: 0.0,
             pending: Vec::new(),
             frame_dressed: false,
+            blink_clock: Instant::now(),
         };
         app.palette = Palette::from_seed(app.settings.seed_color(), app.settings.scheme());
         crate::ui::install_style(&cc.egui_ctx, &app.palette);
@@ -185,13 +202,9 @@ impl MuxApp {
     }
 
     fn apply_to_all(&self, f: impl Fn(&crate::mpv::MpvPlayer)) {
-        for player in [
-            self.media.player_a.as_ref(),
-            self.media.player_b.as_ref(),
-            self.media.player_d.as_ref(),
-        ]
-        .into_iter()
-        .flatten()
+        for player in [self.media.player_a.as_ref(), self.media.player_b.as_ref()]
+            .into_iter()
+            .flatten()
         {
             f(player);
         }
@@ -225,9 +238,6 @@ impl MuxApp {
             .flatten()
         {
             player.seek_absolute(clamped);
-        }
-        if let Some(d) = &self.media.player_d {
-            d.seek_absolute(clamped);
         }
         self.scrub = None;
     }
@@ -388,37 +398,9 @@ impl MuxApp {
                         a.set_pause(true);
                     }
                 }
-                self.ensure_difference();
             }
             Err(err) => {
                 self.toast = Some(Toast::error(format!("载入失败：{err:#}")));
-            }
-        }
-    }
-
-    /// Builds the lavfi difference plane when the mode needs it.
-    pub(super) fn ensure_difference(&mut self) {
-        if self.settings.mode != CompareMode::Difference {
-            return;
-        }
-        let (Some(lib), Some(a), Some(b)) = (
-            self.lib.clone(),
-            self.media.file_a.clone(),
-            self.media.file_b.clone(),
-        ) else {
-            return;
-        };
-        if self.media.player_d.is_some() {
-            return;
-        }
-        let opts = self.mpv_options();
-        match self.media.open_difference(&lib, &a, &b, &opts) {
-            Ok(()) => {
-                self.set_paused(true);
-            }
-            Err(err) => {
-                self.logs.push(format!("差值模式启动失败：{err:#}"));
-                self.toast = Some(Toast::error("差值模式启动失败，已回退到单画面"));
             }
         }
     }
@@ -429,17 +411,6 @@ impl MuxApp {
         }
         self.settings.mode = mode;
         self.settings_dirty = true;
-        match mode {
-            CompareMode::Single => {
-                self.media.close_difference();
-            }
-            CompareMode::Difference => {
-                self.ensure_difference();
-            }
-            _ => {
-                self.media.close_difference();
-            }
-        }
         // Comparing always starts paused and aligned.
         if mode.needs_b() && self.media.player_b.is_some() {
             let pos = self
@@ -464,15 +435,7 @@ impl MuxApp {
                     match plane {
                         'A' => self.media.refresh_meta(stage::Plane::A),
                         'B' => self.media.refresh_meta(stage::Plane::B),
-                        _ => {
-                            if self.media.note_diff_loaded() && !self.media.apply_difference_graph()
-                            {
-                                self.toast = Some(Toast::error(
-                                    "差值模式：mpv 拒绝了 lavfi-complex 混合图".to_string(),
-                                ));
-                            }
-                            ctx.request_repaint();
-                        }
+                        _ => {}
                     }
                     ctx.request_repaint();
                 }
@@ -553,7 +516,7 @@ impl MuxApp {
             self.set_mode(CompareMode::Wipe);
         }
         if pressed(Key::Num4) {
-            self.set_mode(CompareMode::Difference);
+            self.set_mode(CompareMode::Blink);
         }
         if pressed(Key::Tab) {
             self.settings.show_playlist = !self.settings.show_playlist;
@@ -613,15 +576,26 @@ impl MuxApp {
             self.stage_rect
         };
         let ppp = ctx.pixels_per_point();
+        let blink_b = self.settings.mode == CompareMode::Blink && self.blink_show_b();
         self.media.sync_layout(
             rect,
             ppp,
             self.settings.mode,
             self.settings.axis,
             self.settings.wipe,
+            blink_b,
         );
         self.media.sync_playback(self.settings.mode);
         self.stage_reported = false;
+    }
+
+    /// Which input the flicker comparison shows right now.
+    ///
+    /// A small duty cycle in favour of A keeps the reference recognisable while
+    /// B still pops out on every switch.
+    fn blink_show_b(&self) -> bool {
+        let phase = self.blink_clock.elapsed().as_secs_f64() / BLINK_HALF_SECS;
+        (phase as u64) % 2 == 1
     }
 
     fn maybe_save(&mut self) {
@@ -633,6 +607,12 @@ impl MuxApp {
     }
 
     fn toast_layer(&mut self, ctx: &egui::Context) {
+        // On the settings page there are no native planes, so the floating
+        // layer is visible. Elsewhere the transport draws the snackbar itself,
+        // because egui cannot paint over the video windows.
+        if self.rail != RailTab::Settings {
+            return;
+        }
         let Some(toast) = self.toast.clone() else {
             return;
         };
@@ -716,6 +696,7 @@ impl eframe::App for MuxApp {
         if !ctx.wants_keyboard_input() {
             self.handle_keys(ctx);
         }
+        input::pump(self, ctx);
         self.pump_events(ctx);
 
         let palette = self.palette.clone();
@@ -771,8 +752,12 @@ impl eframe::App for MuxApp {
         self.maybe_save();
 
         let playing = self.is_playing();
+        let blinking = self.settings.mode == CompareMode::Blink && self.media.file_b.is_some();
         ctx.request_repaint_after(if playing {
             Duration::from_millis(16)
+        } else if blinking {
+            // Even on a paused frame the planes must keep swapping.
+            Duration::from_millis(30)
         } else {
             Duration::from_millis(100)
         });

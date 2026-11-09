@@ -190,11 +190,11 @@ pub(super) fn titlebar(ui: &mut Ui, app: &mut MuxApp) {
             ui.add_space(6.0);
             file_badge(ui, app, Target::B);
             ui.add_space(6.0);
-            if app.settings.mode == CompareMode::Difference {
+            if app.settings.mode == CompareMode::Blink {
                 controls::badge(
                     ui,
                     &p,
-                    "DIFF",
+                    "A⇄B",
                     controls::container(p.tertiary, p.surface),
                     p.on_surface,
                 );
@@ -375,7 +375,10 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
         |ui| {
             for mode in CompareMode::ALL {
                 let selected = app.settings.mode == mode;
-                if controls::chip(ui, &p, mode.label(), selected).clicked() {
+                if controls::chip(ui, &p, mode.label(), selected)
+                    .on_hover_text(format!("{}\n{}", mode.hint(), mode.about()))
+                    .clicked()
+                {
                     app.set_mode(mode);
                 }
                 ui.add_space(6.0);
@@ -440,6 +443,14 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
                             .size(11.0)
                             .monospace()
                             .color(p.on_surface_variant),
+                    );
+                }
+                if app.settings.mode.needs_b() && ui.available_width() > 200.0 {
+                    ui.add_space(12.0);
+                    ui.label(
+                        egui::RichText::new(app.settings.mode.hint())
+                            .size(11.0)
+                            .color(p.on_surface_variant.gamma_multiply(0.85)),
                     );
                 }
             });
@@ -605,7 +616,7 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
     let inner = card.shrink2(vec2(22.0, 10.0));
 
     // Row 1 — progress.
-    let row1 = Rect::from_min_size(inner.min, vec2(inner.width(), 28.0));
+    let row1 = Rect::from_min_size(inner.min, vec2(inner.width(), 40.0));
     ui.scope_builder(
         UiBuilder::new()
             .max_rect(row1)
@@ -632,9 +643,20 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
             );
             let slider_w = (ui.available_width() - label_w - 12.0).max(80.0);
             let mut frac = if dur > 0.0 { (pos / dur) as f32 } else { 0.0 };
-            let resp = controls::slider(ui, &p, slider_w, &mut frac, app.has_video() && dur > 0.0);
-            if resp.changed() && dur > 0.0 {
-                app.seek_to((frac as f64) * dur);
+            let playing = app.is_playing();
+            let resp = crate::ui::wavy_slider(ui, &p, "seek", slider_w, &mut frac, playing);
+            let target = if dur > 0.0 {
+                Some((frac as f64) * dur)
+            } else {
+                None
+            };
+            // While scrubbing, report the dragged position instead of the
+            // decoder's, so the time label tracks the thumb without jitter.
+            app.scrub = if resp.dragging { target } else { None };
+            if resp.changed
+                && let Some(pos) = target
+            {
+                app.seek_to(pos);
             }
             ui.allocate_ui_with_layout(
                 vec2(label_w, 20.0),
@@ -655,7 +677,7 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
 
     // Row 2 — controls.
     let row2 = Rect::from_min_max(
-        pos2(inner.min.x, inner.min.y + 32.0),
+        pos2(inner.min.x, inner.min.y + 44.0),
         pos2(inner.max.x, inner.max.y),
     );
     ui.scope_builder(
@@ -774,6 +796,31 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
             });
         },
     );
+
+    // Transient feedback (volume / zoom). Drawn over the transport because the
+    // stage is a native surface: anything egui paints there stays hidden.
+    if let Some(toast) = &app.toast {
+        let alpha = toast.alpha();
+        if alpha > 0.0 {
+            let galley = ui.painter().layout_no_wrap(
+                toast.text.clone(),
+                egui::FontId::proportional(12.0),
+                p.on_surface,
+            );
+            let size = vec2(galley.size().x + 26.0, 28.0);
+            let rect = Rect::from_center_size(pos2(card.center().x, row2.center().y), size);
+            ui.painter().rect_filled(
+                rect,
+                CornerRadius::same(14),
+                p.surface_container_highest.gamma_multiply(alpha),
+            );
+            ui.painter().galley(
+                rect.center() - galley.size() * 0.5,
+                galley,
+                p.on_surface.gamma_multiply(alpha),
+            );
+        }
+    }
 }
 
 fn trim_speed(speed: f64) -> String {

@@ -26,16 +26,20 @@ cargo build --offline
 
 ## 关键设计
 
-- 视频面 = Win32 子窗口：`root eframe hwnd → stage container(WS_CLIPCHILDREN) → plane A / B / D`，
+- 视频面 = Win32 子窗口：`root eframe hwnd → stage container(WS_CLIPCHILDREN) → plane A / B`，
   每个 plane 一个 libmpv 实例，用 `wid` 选项内嵌。
-- 对比模式：Single / Pair（左右|上下）/ Wipe（B 面 SetWindowRgn 裁剪）/ Difference
-  （单实例 `lavfi-complex [vid1][vid2]blend=all_mode=difference[vo]`）。
+- 对比模式：Single / Pair（左右|上下）/ Wipe（B 面 SetWindowRgn 裁剪）/ Blink（A/B 同位置
+  每 0.45s 轮流显示；`sync_layout` 的第 6 参 `blink_b` 决定此刻显示哪一路，停帧也要 30ms 重绘）。
+- **不要试图用 `lavfi-complex` 做两文件的逐像素差值**：`[vid1]/[vid2]` 是同一文件的第 1/2 条
+  视频轨，传两个文件会报 `Pad vid2 is not connected to anything.`（已实测），单实例做不到。
+- 鼠标事件靠 `src/app/input.rs` + `src/video/childwin.rs` 的子类化钩子（`take_input_events()`）捞回，
+  必须按 `InputEvent.hwnd` 过滤掉 container / eframe 顶层的冒泡副本，否则音量会翻倍。
 - A 面为同步 master，B 面漂移 > 80 ms 时 IPC-free 的 `seek_absolute` 纠偏（250 ms 节流）。
 - 官方 `mpv.exe` 的 `--wid` 不可用（`[vo/gpu/win32] unable to create window!`），不要回退到 shell out。
 
 ## 目录
 
-- `src/app/` —— App 外壳：`mod.rs`（状态与 update）、`bars.rs`（标题栏/rail/对比条/舞台/transport）、
+- `src/app/` —— App 外壳：`mod.rs`（状态与 update）、`bars.rs`（标题栏/rail/对比条/舞台/transport）、`input.rs`（鼠标手势层）、
   `panels.rs`（播放列表/设置）、`controls.rs`（M3 控件）、`icons.rs`（矢量图标）、`stage.rs`（原生窗口层）、
   `state.rs`（设置/模式/格式化）、`open_dialog.rs`（Win32 文件选择）。
 - `src/mpv/` —— libmpv 加载器、播放器、事件队列。

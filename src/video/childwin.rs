@@ -4,9 +4,16 @@
 //! registered once per process, paints solid black, never erases its background
 //! (resizing does not flicker) and refuses mouse activation so clicking the
 //! video keeps keyboard focus in the eframe window.
+//!
+//! Every surface is also subclassed so pointer input reaches the application:
+//! libmpv creates its own hit-test-transparent child window inside the surface,
+//! so `WM_MOUSEMOVE` / button messages are delivered to our window even though
+//! mpv is painting it. The subclass chains to the class procedure, converts the
+//! messages into [`MouseEvent`]s and queues them for [`take_input_events`].
 
+use std::collections::HashMap;
 use std::ffi::c_void;
-use std::sync::{Mutex, MutexGuard};
+use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use anyhow::bail;
 use windows_sys::Win32::Foundation::{
@@ -18,11 +25,15 @@ use windows_sys::Win32::Graphics::Gdi::{
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DestroyWindow, EnumWindows,
-    GetClientRect, GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HMENU, HWND_TOP,
-    IDC_ARROW, IsWindow, LoadCursorW, MA_NOACTIVATE, RegisterClassW, SW_HIDE, SW_SHOW,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowPos, ShowWindow, WM_ERASEBKGND,
-    WM_MOUSEACTIVATE, WM_PAINT, WNDCLASSW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_VISIBLE,
+    CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, CallWindowProcW, CreateWindowExW, DefWindowProcW,
+    DestroyWindow, EnumWindows, GWLP_WNDPROC, GetClientRect, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, HMENU, HWND_TOP, IDC_ARROW, IsWindow, LoadCursorW, MA_NOACTIVATE,
+    RegisterClassW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CAPTURECHANGED, WM_ERASEBKGND,
+    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP,
+    WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDBLCLK,
+    WM_RBUTTONDOWN, WM_RBUTTONUP, WNDCLASSW, WNDPROC, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
+    WS_VISIBLE,
 };
 use windows_sys::core::BOOL;
 
@@ -132,7 +143,9 @@ fn ensure_class() -> anyhow::Result<()> {
 
     let class_name = wide(CLASS_NAME);
     let window_class = WNDCLASSW {
-        style: CS_HREDRAW | CS_VREDRAW,
+        // `CS_DBLCLKS` makes Windows deliver `WM_*BUTTONDBLCLK` for real
+        // double clicks; the subclass reports those as Down + DoubleClick.
+        style: CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS,
         lpfnWndProc: Some(wndproc),
         hInstance: instance,
         // SAFETY: stock resources are process-wide and not owned by us.
@@ -157,6 +170,414 @@ fn ensure_class() -> anyhow::Result<()> {
 
     *registered = Some(instance);
     Ok(())
+}
+
+/// One pointer action captured on a native video surface.
+///
+/// Coordinates are client-area pixels of the surface named by
+/// [`InputEvent::hwnd`]. A button press is bounded by [`MouseEvent::Down`] and
+/// [`MouseEvent::Up`]; moves are reported whether or not a button is held, so
+/// the consumer can derive the pressed state from those two events.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MouseEvent {
+    /// A button went down. `button`: 0 = left, 1 = right, 2 = middle.
+    Down { x: i32, y: i32, button: u8 },
+    /// A button went up. `button`: 0 = left, 1 = right, 2 = middle.
+    Up { x: i32, y: i32, button: u8 },
+    /// The pointer moved. Consecutive moves for one window are coalesced.
+    Move { x: i32, y: i32 },
+    /// A double click happened. The matching [`MouseEvent::Down`] is emitted
+    /// first so consumers that only care about presses stay correct.
+    DoubleClick,
+    /// Raw wheel delta: 120 per notch, positive when scrolling up/away.
+    Wheel { delta: i32 },
+    /// The pointer left the surface.
+    Leave,
+}
+
+/// A [`MouseEvent`] tagged with the native surface that produced it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InputEvent {
+    /// Native window handle of the surface, as an `i64`.
+    pub hwnd: i64,
+    pub event: MouseEvent,
+}
+
+/// Soft queue bound; overflow discards the oldest `Move` before anything else.
+const INPUT_QUEUE_LIMIT: usize = 256;
+
+/// `WM_MOUSELEAVE` (not exposed by the enabled windows-sys features).
+const WM_MOUSELEAVE: u32 = 0x02A3;
+/// `TME_LEAVE`: request a `WM_MOUSELEAVE` when the pointer exits the window.
+const TME_LEAVE: u32 = 0x0000_0002;
+
+static INPUT_QUEUE: OnceLock<Mutex<Vec<InputEvent>>> = OnceLock::new();
+
+fn input_queue() -> &'static Mutex<Vec<InputEvent>> {
+    INPUT_QUEUE.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Removes every captured pointer event, oldest first.
+///
+/// The application polls this once per frame and dispatches the events to the
+/// plane that owns the handle. The returned vector is never longer than the
+/// queue limit (256 entries).
+pub fn take_input_events() -> Vec<InputEvent> {
+    std::mem::take(&mut *lock(input_queue()))
+}
+
+fn queue_event(event: InputEvent) {
+    let mut queue = lock(input_queue());
+    let coalesces = matches!(event.event, MouseEvent::Move { .. })
+        && queue.last().is_some_and(|last| {
+            last.hwnd == event.hwnd && matches!(last.event, MouseEvent::Move { .. })
+        });
+    if coalesces {
+        if let Some(last) = queue.last_mut() {
+            last.event = event.event;
+        }
+        return;
+    }
+
+    while queue.len() >= INPUT_QUEUE_LIMIT {
+        let oldest_move = queue
+            .iter()
+            .position(|queued| matches!(queued.event, MouseEvent::Move { .. }));
+        match oldest_move {
+            Some(index) => {
+                queue.remove(index);
+            }
+            None => {
+                queue.remove(0);
+            }
+        }
+    }
+    queue.push(event);
+}
+
+/// Per-surface state needed to turn raw messages into self-contained events.
+struct HookedSurface {
+    /// Procedure that was installed before [`install_input_hook`].
+    original: WNDPROC,
+    /// Bit mask of held buttons; bit 0 = left, 1 = right, 2 = middle.
+    pressed: u8,
+    /// Whether `TrackMouseEvent(TME_LEAVE)` is currently armed.
+    leave_tracking: bool,
+    last_x: i32,
+    last_y: i32,
+}
+
+static INPUT_HOOKS: OnceLock<Mutex<HashMap<isize, HookedSurface>>> = OnceLock::new();
+
+fn input_hooks() -> &'static Mutex<HashMap<isize, HookedSurface>> {
+    INPUT_HOOKS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn hwnd_key(hwnd: HWND) -> isize {
+    hwnd as isize
+}
+
+fn client_point(lparam: LPARAM) -> (i32, i32) {
+    let packed = lparam as u32;
+    let x = (packed & 0xffff) as u16 as i16 as i32;
+    let y = ((packed >> 16) & 0xffff) as u16 as i16 as i32;
+    (x, y)
+}
+
+fn wheel_delta(wparam: WPARAM) -> i32 {
+    ((wparam as u32 >> 16) & 0xffff) as u16 as i16 as i32
+}
+
+/// Installs the pointer capture subclass on a native surface.
+///
+/// [`ChildWindow::create`] calls this automatically, so applications normally
+/// never need to. Installing twice for one handle is a no-op.
+pub fn install_input_hook(hwnd: i64) {
+    if hwnd == 0 {
+        return;
+    }
+    let key = hwnd as isize;
+    let mut hooks = lock(input_hooks());
+    if hooks.contains_key(&key) {
+        return;
+    }
+
+    let window = hwnd as usize as HWND;
+    // SAFETY: `window` is a live window created by this module; replacing its
+    // window procedure is the documented subclassing mechanism, and the
+    // previous procedure is chained from `input_wndproc`.
+    let previous =
+        unsafe { SetWindowLongPtrW(window, GWLP_WNDPROC, input_wndproc as *const () as isize) };
+    if previous == 0 {
+        // The window died (or the call failed); leave it untouched.
+        return;
+    }
+    // SAFETY: `SetWindowLongPtrW` returned the previous window procedure, an
+    // address that is never NULL for a live window (that case was rejected
+    // above), and function pointers have the same size as `isize` on Windows.
+    let original: WNDPROC = Some(unsafe { std::mem::transmute::<isize, SurfaceWndProc>(previous) });
+    hooks.insert(
+        key,
+        HookedSurface {
+            original,
+            pressed: 0,
+            leave_tracking: false,
+            last_x: 0,
+            last_y: 0,
+        },
+    );
+}
+
+type SurfaceWndProc = unsafe extern "system" fn(HWND, u32, WPARAM, LPARAM) -> LRESULT;
+
+/// Chains a message to the procedure that preceded [`install_input_hook`].
+///
+/// # Safety
+///
+/// `hwnd` must be a live window; the function only forwards to the stored
+/// window procedure (or `DefWindowProcW`).
+unsafe fn call_original(hwnd: HWND, message: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    let original = lock(input_hooks())
+        .get(&hwnd_key(hwnd))
+        .and_then(|state| state.original);
+    // SAFETY: the stored procedure was active on this window before this
+    // subclass was installed; the fallback keeps default processing intact.
+    match original {
+        Some(procedure) => unsafe {
+            CallWindowProcW(Some(procedure), hwnd, message, wparam, lparam)
+        },
+        None => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+    }
+}
+
+/// `WM_NCDESTROY`: forget the surface, finish in-flight gestures, then chain.
+fn handle_destroy(hwnd: HWND) -> Option<SurfaceWndProc> {
+    let state = lock(input_hooks()).remove(&hwnd_key(hwnd))?;
+    let key = hwnd_key(hwnd) as i64;
+    if state.pressed != 0 {
+        for button in 0..3u8 {
+            if state.pressed & (1u8 << button) != 0 {
+                queue_event(InputEvent {
+                    hwnd: key,
+                    event: MouseEvent::Up {
+                        x: state.last_x,
+                        y: state.last_y,
+                        button,
+                    },
+                });
+            }
+        }
+    }
+    queue_event(InputEvent {
+        hwnd: key,
+        event: MouseEvent::Leave,
+    });
+    state.original
+}
+
+fn handle_move(hwnd: HWND, lparam: LPARAM) {
+    let (x, y) = client_point(lparam);
+    let key = hwnd_key(hwnd);
+    let mut arm_leave = false;
+    if let Some(state) = lock(input_hooks()).get_mut(&key) {
+        state.last_x = x;
+        state.last_y = y;
+        if state.pressed == 0 && !state.leave_tracking {
+            state.leave_tracking = true;
+            arm_leave = true;
+        }
+    }
+
+    if arm_leave {
+        let mut request = MouseLeaveTrack {
+            cb_size: std::mem::size_of::<MouseLeaveTrack>() as u32,
+            flags: TME_LEAVE,
+            hwnd,
+            hover_time: 0,
+        };
+        // SAFETY: `request` is a correctly sized TME_LEAVE request for a live
+        // window; the system copies it before returning.
+        let tracked = unsafe { TrackMouseEvent(&mut request) };
+        if tracked == 0
+            && let Some(state) = lock(input_hooks()).get_mut(&key)
+        {
+            state.leave_tracking = false;
+        }
+    }
+
+    queue_event(InputEvent {
+        hwnd: key as i64,
+        event: MouseEvent::Move { x, y },
+    });
+}
+
+fn handle_leave(hwnd: HWND) {
+    if let Some(state) = lock(input_hooks()).get_mut(&hwnd_key(hwnd)) {
+        state.leave_tracking = false;
+    }
+    queue_event(InputEvent {
+        hwnd: hwnd_key(hwnd) as i64,
+        event: MouseEvent::Leave,
+    });
+}
+
+fn handle_button(hwnd: HWND, lparam: LPARAM, button: u8, down: bool) {
+    let (x, y) = client_point(lparam);
+    let key = hwnd_key(hwnd);
+    let mut capture = false;
+    let mut release = false;
+    if let Some(state) = lock(input_hooks()).get_mut(&key) {
+        state.last_x = x;
+        state.last_y = y;
+        let bit = 1u8 << button;
+        if down {
+            capture = state.pressed == 0;
+            state.pressed |= bit;
+        } else {
+            state.pressed &= !bit;
+            release = state.pressed == 0;
+        }
+    }
+
+    // Capture on the first press so a drag keeps reporting while the pointer
+    // leaves the surface; release only when every button is up again.
+    // SAFETY: `hwnd` is live; both calls are the standard capture sequence.
+    unsafe {
+        if capture {
+            SetCapture(hwnd);
+        }
+        if release {
+            ReleaseCapture();
+        }
+    }
+
+    queue_event(InputEvent {
+        hwnd: key as i64,
+        event: if down {
+            MouseEvent::Down { x, y, button }
+        } else {
+            MouseEvent::Up { x, y, button }
+        },
+    });
+}
+
+fn handle_double_click(hwnd: HWND, lparam: LPARAM, button: u8) {
+    let (x, y) = client_point(lparam);
+    let key = hwnd_key(hwnd);
+    let mut capture = false;
+    if let Some(state) = lock(input_hooks()).get_mut(&key) {
+        state.last_x = x;
+        state.last_y = y;
+        capture = state.pressed == 0;
+        state.pressed |= 1u8 << button;
+    }
+    if capture {
+        // SAFETY: keep drags that start with a double click captured.
+        unsafe {
+            SetCapture(hwnd);
+        }
+    }
+    queue_event(InputEvent {
+        hwnd: key as i64,
+        event: MouseEvent::Down { x, y, button },
+    });
+    queue_event(InputEvent {
+        hwnd: key as i64,
+        event: MouseEvent::DoubleClick,
+    });
+}
+
+fn handle_capture_changed(hwnd: HWND) {
+    let key = hwnd_key(hwnd);
+    let Some((x, y, pressed)) = lock(input_hooks()).get_mut(&key).map(|state| {
+        let pressed = std::mem::take(&mut state.pressed);
+        (state.last_x, state.last_y, pressed)
+    }) else {
+        return;
+    };
+    if pressed == 0 {
+        return;
+    }
+    for button in 0..3u8 {
+        if pressed & (1u8 << button) != 0 {
+            queue_event(InputEvent {
+                hwnd: key as i64,
+                event: MouseEvent::Up { x, y, button },
+            });
+        }
+    }
+    // Capture was lost mid-drag (alt-tab, another window); tell the consumer
+    // the pointer is no longer tracked over this surface.
+    queue_event(InputEvent {
+        hwnd: key as i64,
+        event: MouseEvent::Leave,
+    });
+}
+
+fn handle_wheel(hwnd: HWND, wparam: WPARAM) {
+    queue_event(InputEvent {
+        hwnd: hwnd_key(hwnd) as i64,
+        event: MouseEvent::Wheel {
+            delta: wheel_delta(wparam),
+        },
+    });
+}
+
+/// Subclass procedure: records pointer input, then chains every message.
+unsafe extern "system" fn input_wndproc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match message {
+        WM_MOUSEMOVE => handle_move(hwnd, lparam),
+        WM_LBUTTONDOWN => handle_button(hwnd, lparam, 0, true),
+        WM_LBUTTONUP => handle_button(hwnd, lparam, 0, false),
+        WM_RBUTTONDOWN => handle_button(hwnd, lparam, 1, true),
+        WM_RBUTTONUP => handle_button(hwnd, lparam, 1, false),
+        WM_MBUTTONDOWN => handle_button(hwnd, lparam, 2, true),
+        WM_MBUTTONUP => handle_button(hwnd, lparam, 2, false),
+        WM_LBUTTONDBLCLK => handle_double_click(hwnd, lparam, 0),
+        WM_RBUTTONDBLCLK => handle_double_click(hwnd, lparam, 1),
+        WM_MBUTTONDBLCLK => handle_double_click(hwnd, lparam, 2),
+        WM_MOUSEWHEEL => handle_wheel(hwnd, wparam),
+        WM_MOUSELEAVE => handle_leave(hwnd),
+        WM_CAPTURECHANGED => handle_capture_changed(hwnd),
+        WM_NCDESTROY => {
+            let original = handle_destroy(hwnd);
+            // SAFETY: the surface is being destroyed; chain to the procedure
+            // that owned it, falling back to default processing.
+            return match original {
+                Some(procedure) => unsafe {
+                    CallWindowProcW(Some(procedure), hwnd, message, wparam, lparam)
+                },
+                None => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+            };
+        }
+        _ => {}
+    }
+
+    // SAFETY: every recorded message is also forwarded, so the original class
+    // procedure keeps observing the same sequence it always saw.
+    unsafe { call_original(hwnd, message, wparam, lparam) }
+}
+
+/// `TrackMouseEvent` request structure (the windows-sys feature that would
+/// provide it is not enabled by this crate).
+#[repr(C)]
+struct MouseLeaveTrack {
+    cb_size: u32,
+    flags: u32,
+    hwnd: HWND,
+    hover_time: u32,
+}
+
+#[link(name = "user32")]
+unsafe extern "system" {
+    fn SetCapture(hwnd: HWND) -> HWND;
+    fn ReleaseCapture() -> BOOL;
+    fn TrackMouseEvent(track: *mut MouseLeaveTrack) -> BOOL;
 }
 
 /// A native child window hosting one video plane.
@@ -210,6 +631,7 @@ impl ChildWindow {
             bail!("CreateWindowExW({CLASS_NAME}) failed (Win32 error {error})");
         }
 
+        install_input_hook(hwnd as isize as i64);
         Ok(Self { hwnd })
     }
 
@@ -380,5 +802,69 @@ mod tests {
     fn wide_encoding_is_nul_terminated() {
         assert_eq!(wide(""), vec![0]);
         assert_eq!(wide("abc"), vec![0x61, 0x62, 0x63, 0]);
+    }
+
+    #[test]
+    fn input_queue_coalesces_moves_and_evicts_moves_first() {
+        let _ = take_input_events();
+        let hwnd = 0x1234_i64;
+
+        queue_event(InputEvent {
+            hwnd,
+            event: MouseEvent::Down {
+                x: 1,
+                y: 2,
+                button: 0,
+            },
+        });
+        for x in [0, 0, 1, 1] {
+            queue_event(InputEvent {
+                hwnd,
+                event: MouseEvent::Move { x, y: 0 },
+            });
+        }
+        let events = take_input_events();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[1].event, MouseEvent::Move { x: 1, y: 0 });
+
+        // Fill the queue completely, then overflow it: the oldest Move goes and
+        // the button event is preserved.
+        queue_event(InputEvent {
+            hwnd,
+            event: MouseEvent::Move { x: 0, y: 0 },
+        });
+        for _ in 0..(INPUT_QUEUE_LIMIT - 1) {
+            queue_event(InputEvent {
+                hwnd,
+                event: MouseEvent::Wheel { delta: 120 },
+            });
+        }
+        queue_event(InputEvent {
+            hwnd,
+            event: MouseEvent::Down {
+                x: 3,
+                y: 4,
+                button: 1,
+            },
+        });
+        let events = take_input_events();
+        assert_eq!(events.len(), INPUT_QUEUE_LIMIT);
+        assert_eq!(
+            events.first().map(|event| event.event),
+            Some(MouseEvent::Wheel { delta: 120 })
+        );
+        assert_eq!(
+            events.last().map(|event| event.event),
+            Some(MouseEvent::Down {
+                x: 3,
+                y: 4,
+                button: 1
+            })
+        );
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event.event, MouseEvent::Move { .. }))
+        );
     }
 }

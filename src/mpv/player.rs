@@ -442,6 +442,46 @@ impl MpvPlayer {
         self.cache.volume()
     }
 
+    /// Pans the video inside its surface by fractions of the video size.
+    ///
+    /// mpv itself accepts any finite value (positive pans right/down), so this
+    /// forwards the values unchanged; callers that need bounds clamp first.
+    pub fn set_pan(&self, x: f64, y: f64) -> bool {
+        if !x.is_finite() || !y.is_finite() {
+            return false;
+        }
+        let x_ok = self.set_property("video-pan-x", &format!("{x:.6}"));
+        let y_ok = self.set_property("video-pan-y", &format!("{y:.6}"));
+        x_ok && y_ok
+    }
+
+    /// Sets the video zoom factor; `0.0` fits the video to the window.
+    ///
+    /// Values are mpv's `video-zoom` units (positive zooms in); mpv does not
+    /// clamp them, so callers that need a range enforce it themselves.
+    pub fn set_zoom(&self, zoom: f64) -> bool {
+        if !zoom.is_finite() {
+            return false;
+        }
+        self.set_property("video-zoom", &format!("{zoom:.6}"))
+    }
+
+    /// Adds `delta` to the current zoom, clamped to `-2.0..=3.0`.
+    ///
+    /// Returns `false` when `delta` is not finite or libmpv rejects the write.
+    /// A missing or unparsable `video-zoom` readback is treated as `0.0`.
+    pub fn adjust_zoom(&self, delta: f64) -> bool {
+        if !delta.is_finite() {
+            return false;
+        }
+        let current = self
+            .get_property("video-zoom")
+            .and_then(|value| value.trim().parse::<f64>().ok())
+            .filter(|zoom| zoom.is_finite())
+            .unwrap_or(0.0);
+        self.set_zoom((current + delta).clamp(-2.0, 3.0))
+    }
+
     pub fn set_mute(&self, mute: bool) {
         let _ = self.set_property("mute", if mute { "yes" } else { "no" });
     }

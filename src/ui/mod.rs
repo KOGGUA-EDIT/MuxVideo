@@ -8,8 +8,10 @@
 pub mod dynamic_color;
 pub mod kit;
 pub mod palette;
+pub mod wavy;
 pub mod widgets;
 
 pub use dynamic_color::{Hct, SeedPalettes, TonalPalette};
 pub use kit::install_style;
 pub use palette::{Palette, Role, Scheme};
+pub use wavy::{WavySliderResponse, wavy_slider};

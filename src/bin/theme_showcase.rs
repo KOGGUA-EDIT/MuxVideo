@@ -20,7 +20,7 @@ use muxvideo::ui::widgets::{
     icon_button, icon_button_toggle, label, label_small, linear_progress, nav_rail_item,
     paint_icon, segmented, shape, slider, snackbar, space, switch, text_button, title, title_small,
 };
-use muxvideo::ui::{Palette, Role, Scheme, TonalPalette, install_style};
+use muxvideo::ui::{Palette, Role, Scheme, TonalPalette, install_style, wavy_slider};
 
 const SEEDS: [Color32; 5] = [
     Color32::from_rgb(0x67, 0x50, 0xA4), // baseline violet
@@ -64,6 +64,10 @@ struct Showcase {
     waveform: bool,
     opacity: f32,
     zoom: f32,
+    wavy_paused: f32,
+    wavy_playing: f32,
+    wavy_start: f32,
+    wavy_end: f32,
     filter_a: bool,
     undos: u32,
 }
@@ -85,6 +89,10 @@ impl Showcase {
             waveform: false,
             opacity: 0.62,
             zoom: 1.0,
+            wavy_paused: 0.5,
+            wavy_playing: 0.5,
+            wavy_start: 0.0,
+            wavy_end: 1.0,
             filter_a: true,
             undos: 0,
         }
@@ -353,6 +361,46 @@ impl eframe::App for Showcase {
                             });
                         });
 
+                        section(ui, &palette, "波浪滑杆", "Wavy slider", |ui| {
+                            ui.label(label_small(
+                                &palette,
+                                "Expressive · 8 px 轨道 · 振幅 Amplitude 3.5 px · 22 px 波长 · 52 px/s 滚动 · 竖长药丸把手 Pill handle",
+                            ));
+                            ui.add_space(space::SM);
+                            wavy_demo_row(
+                                ui,
+                                &palette,
+                                "暂停 50% Paused",
+                                "wavy-paused",
+                                &mut self.wavy_paused,
+                                false,
+                            );
+                            wavy_demo_row(
+                                ui,
+                                &palette,
+                                "播放中 50% Playing",
+                                "wavy-playing",
+                                &mut self.wavy_playing,
+                                true,
+                            );
+                            wavy_demo_row(
+                                ui,
+                                &palette,
+                                "起点 0% Start",
+                                "wavy-start",
+                                &mut self.wavy_start,
+                                false,
+                            );
+                            wavy_demo_row(
+                                ui,
+                                &palette,
+                                "终点 100% End",
+                                "wavy-end",
+                                &mut self.wavy_end,
+                                false,
+                            );
+                        });
+
                         section(ui, &palette, "卡片", "Cards", |ui| {
                             ui.columns(3, |columns| {
                                 for (index, (kind, name, copy, icon)) in [
@@ -509,6 +557,50 @@ fn section(
     add(ui);
     ui.add_space(space::LG);
     divider(ui, palette);
+}
+
+/// One labelled [`wavy_slider`] row: name, slider, live percentage, state.
+fn wavy_demo_row(
+    ui: &mut egui::Ui,
+    palette: &Palette,
+    name: &str,
+    salt: &str,
+    value: &mut f32,
+    animated: bool,
+) {
+    ui.horizontal(|ui| {
+        ui.allocate_ui_with_layout(
+            Vec2::new(190.0, 40.0),
+            Layout::left_to_right(Align::Center),
+            |ui| {
+                ui.label(label(palette, name));
+            },
+        );
+        let out = wavy_slider(ui, palette, salt, 360.0, value, animated);
+        ui.add_space(space::SM);
+        ui.allocate_ui_with_layout(
+            Vec2::new(56.0, 40.0),
+            Layout::left_to_right(Align::Center),
+            |ui| {
+                ui.label(body(palette, format!("{:>3.0}%", *value * 100.0)));
+            },
+        );
+        ui.add_space(space::SM);
+        let status = if out.dragging {
+            "拖拽中 Dragging"
+        } else if animated {
+            "播放中 Playing"
+        } else {
+            "已暂停 Paused"
+        };
+        ui.allocate_ui_with_layout(
+            Vec2::new(120.0, 40.0),
+            Layout::left_to_right(Align::Center),
+            |ui| {
+                ui.label(label_small(palette, status));
+            },
+        );
+    });
 }
 
 fn role_swatch(ui: &mut egui::Ui, palette: &Palette, role: Role) {

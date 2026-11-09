@@ -14,28 +14,49 @@ pub enum CompareMode {
     Pair,
     /// Both planes in place, split by a movable edge.
     Wipe,
-    /// Single plane showing the pixel difference of A and B.
-    Difference,
+    /// A and B alternate in place, the classic flicker comparison.
+    #[serde(alias = "Difference")]
+    Blink,
 }
 
 impl CompareMode {
-    pub const ALL: [Self; 4] = [Self::Single, Self::Pair, Self::Wipe, Self::Difference];
+    pub const ALL: [Self; 4] = [Self::Single, Self::Pair, Self::Wipe, Self::Blink];
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Single => "单画面",
             Self::Pair => "并排",
             Self::Wipe => "划像",
-            Self::Difference => "差值",
+            Self::Blink => "闪烁",
         }
     }
 
     pub fn hint(self) -> &'static str {
         match self {
-            Self::Single => "只显示 A 画面",
-            Self::Pair => "A / B 各占一半，可切分轴",
-            Self::Wipe => "两块画面重叠，拖动分界对比",
-            Self::Difference => "像素差值，同点位偏差一目了然",
+            Self::Single => "只看 A 面，B 静音待命",
+            Self::Pair => "A / B 同帧并排，比构图与调色",
+            Self::Wipe => "两路叠在一起，拖画面分界逐处对照",
+            Self::Blink => "A / B 同位置快速切换，抖动即差异",
+        }
+    }
+
+    /// Longer explanation used in tooltips on the compare bar.
+    pub fn about(self) -> &'static str {
+        match self {
+            Self::Single => "只显示 A 面。切回单画面时 B 面会暂停解码，省性能。",
+            Self::Pair => {
+                "A / B 各占一半，同一时间点并排播放。适合对比两个版本的分辨率、\
+构图、调色、字幕位置。"
+            }
+            Self::Wipe => {
+                "A / B 画面完全重叠，只有分界线左侧显示 A、右侧显示 B。\
+直接用鼠标在画面上左右拖动分界线，就能逐处对照——比并排更容易看出细微位移。"
+            }
+            Self::Blink => {
+                "A / B 在同一个位置、同一时间点轮流显示，每秒切换几次。\
+人眼对「闪一下动了的地方」极其敏感，所以修图、磨皮、降噪、锐化这类改动，\
+闪烁比并排和划像都更容易看出来。"
+            }
         }
     }
 

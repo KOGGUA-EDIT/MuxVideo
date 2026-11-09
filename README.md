@@ -12,11 +12,27 @@ Material You（MD3）深/浅色主题，自绘 SVG 级矢量图标，无边框�
   工具条实时显示 `同步 Δ±N ms`。
 - **并排**：左右 / 上下各占一半，中间留 2px 缝；B 默认静音避免双声道回声。
 - **划像**：两层全屏叠放，用 `SetWindowRgn` 把 B 裁到分界线右侧（或下方），分界位置可拖动。
-- **差值**：单实例 `lavfi-complex=[vid1][vid2]blend=all_mode=difference[vo]`，
-  两轨都加载完成后才设图（mpv 要求输入存在），失败会提示并保留原画面。
+- **闪烁**：A / B 在同一位置、同一时间点每 0.45s 轮流显示，人眼对「闪一下动了的地方」极敏感，
+  最适合看磨皮、降噪、锐化、轻微位移这类改动。
 - **播放列表**：拖入多个视频自动填充，列表行内 A/B 按钮分配平面，双击载入 A，右键移出。
 - **设置页**：深浅色、8 个 MD3 种子色 + 任意 `#RRGGBB`、hwdec 策略、默认音量、列表显隐、快捷键表。
 - 打开方式：命令行参数、拖放到窗口、Win32 文件对话框；`muxvideo a.mp4 b.mp4` 直接进对比。
+
+## 画面上的鼠标操作
+
+视频区域盖着原生子窗口，普通 egui 事件收不到，所以 `src/app/input.rs` 用 Win32 子类化
+（`WM_LBUTTONDOWN` / `WM_MOUSEWHEEL` 等）把鼠标事件捞回来，再映射成播放器动作：
+
+| 操作 | 动作 |
+| --- | --- |
+| 单击画面 | 播放 / 暂停 |
+| 按住左键拖动 | 拖动窗口（RV Player 同款手感；划像模式下改为拖分界线） |
+| 按住中键拖动 | 平移画面（`video-pan`），松手保留 |
+| 滚轮 | 音量 ±4%（画面不动） |
+| `Ctrl` + 滚轮 | 缩放画面（`video-zoom`，-2.0…3.0） |
+| 双击画面 | 全屏切换 |
+
+音量 / 缩放会在播放条里闪一条 snackbar。
 
 ## 快捷键
 
@@ -25,7 +41,7 @@ Material You（MD3）深/浅色主题，自绘 SVG 级矢量图标，无边框�
 | 空格 | 播放 / 暂停 | `←` `→` | ±5 秒 |
 | `J` `L` | ±10 秒 | `,` `.` | 上一帧 / 下一帧 |
 | `↑` `↓` | 音量 ±5 | `M` | 静音 |
-| `1`–`4` | 单画面 / 并排 / 划像 / 差值 | `[` `]` | 分界 ±2% |
+| `1`–`4` | 单画面 / 并排 / 划像 / 闪烁 | `[` `]` | 分界 ±2% |
 | `Tab` | 播放列表显隐 | `F` | 全屏 |
 | `Home` | 回到开头 | `Esc` | 退出全屏 / 退出 |
 
@@ -106,7 +122,8 @@ DSH 的工作区目录（这里是 `D:\app edit\Muxvideo`）带 **Low Mandatory 
 
 ```
 src/app/            外壳：布局、标题栏、导航栏、播放条、列表、设置、图标、窗口装饰
-src/app/stage.rs    原生子窗口层：container + A/B/D 三个平面、布局计算、裁剪、同步
+src/app/stage.rs    原生子窗口层：container + A/B 两个平面、布局计算、裁剪、同步
+src/app/input.rs    原生鼠标手势层：点画面暂停、拖画面移窗、中键平移、滚轮音量、双击全屏
 src/mpv/            libmpv 动态加载、MpvPlayer（事件线程 + 属性缓存）、事件类型
 src/video/          Win32 子窗口封装（注册类、WndProc、SetWindowRgn 裁剪）
 src/ui/             MD3 动态配色（HCT 近似）、调色板角色、egui 样式、控件库
@@ -119,8 +136,7 @@ tools/              探针与验证脚本（Python/Win32），不含运行时依
 eframe toplevel (MuxVideo, winit/glow)
 └── muxvideo-stage        WS_CLIPCHILDREN，正好覆盖 egui 的 stage 矩形
     ├── muxvideo-plane-a  ← libmpv 的 mpv 子窗口渲染到这里（wid）
-    ├── muxvideo-plane-b
-    └── muxvideo-plane-d  差值模式
+    └── muxvideo-plane-b
 ```
 
 egui 只画 chrome，视频区域由原生子窗口承托，避免每帧把视频纹理拷进 egui。
@@ -129,8 +145,10 @@ egui 只画 chrome，视频区域由原生子窗口承托，避免每帧把视�
 
 - 官方 `mpv.exe` 的 `--wid` 在 0.42 构建上无法创建窗口（`[vo/gpu/win32] unable to create window!`），
   所以本项目只用 libmpv，不 shell out。
-- 差值模式需要两段视频同分辨率；不同分辨率时由 blend 取较小者，画面会居中裁切。
+- 没有逐像素差值模式：mpv 的 `lavfi-complex` 里 `[vid1]/[vid2]` 指同一文件的第 1/2 条视频轨，
+  不是播放列表里的两个文件，单实例无法把两个文件相减（实测报 `Pad vid2 is not connected to anything.`）。
+  要做真差值得先离线用 ffmpeg 合成，或用共享内存传帧，代价都不值得——对比用途上「闪烁」更直观。
 - 播放列表不写回磁盘，仅本次会话有效（最近文件会持久化）。
-- 鼠标点击落在视频画面上时事件被原生子窗口吃掉（egui 收不到），所以「点画面暂停」暂不支持，
-  请用空格或底部播放按钮；键盘焦点不会被视频抢走。
+- egui 画不出浮层到视频区域上，所以 snackbar（音量 / 缩放提示）画在播放条里，
+  设置页之外不显示浮动 toast。
 - 浅色主题下视频区域的黑边是 mpv 自己的画面底色（播放器惯例），不跟随主题。

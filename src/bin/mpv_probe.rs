@@ -17,6 +17,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use muxvideo::mpv::{LibMpv, MpvEvent, MpvOptions, MpvPlayer};
 use muxvideo::video::childwin::ChildWindow;
+use muxvideo::video::{MouseEvent, take_input_events};
 use windows_sys::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, GetLastError, HWND, LPARAM, LRESULT, WPARAM,
 };
@@ -24,8 +25,9 @@ use windows_sys::Win32::Graphics::Gdi::{BLACK_BRUSH, GetStockObject};
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CS_HREDRAW, CS_VREDRAW, CW_USEDEFAULT, CreateWindowExW, DefWindowProcW, DestroyWindow,
-    DispatchMessageW, IDC_ARROW, IsWindow, LoadCursorW, MSG, PM_REMOVE, PeekMessageW,
-    PostQuitMessage, RegisterClassW, TranslateMessage, WM_CLOSE, WM_DESTROY, WM_QUIT, WNDCLASSW,
+    DispatchMessageW, IDC_ARROW, IsWindow, LoadCursorW, MSG, PM_REMOVE, PeekMessageW, PostMessageW,
+    PostQuitMessage, RegisterClassW, TranslateMessage, WM_CLOSE, WM_DESTROY, WM_LBUTTONDBLCLK,
+    WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_QUIT, WNDCLASSW,
     WS_OVERLAPPEDWINDOW, WS_VISIBLE,
 };
 
@@ -43,6 +45,13 @@ const DROP_PROPERTIES: [&str; 4] = [
     "drop-frame-count",
     "decoder-frame-drop-count",
 ];
+
+/// Child id of the hidden surface used by the input-event self test.
+const INPUT_TEST_ID: u32 = 3;
+/// `WM_MOUSELEAVE` (not exposed by the enabled windows-sys features).
+const WM_MOUSELEAVE: u32 = 0x02A3;
+/// Seconds of playback to wait before exercising pan/zoom (video must be up).
+const PAN_ZOOM_DELAY_SECS: f64 = 0.5;
 
 fn main() -> Result<()> {
     let project_root = find_project_root();
@@ -95,6 +104,10 @@ fn run(project_root: &Path) -> Result<ProbeReport> {
     plane_a_window.set_rect(16, 64, 480, 270);
     plane_b_window.set_rect(504, 64, 480, 270);
 
+    // Self test for the native pointer capture; independent of libmpv, so run
+    // it before loading the DLL.
+    let input_check = run_input_check(window.hwnd());
+
     let lib = LibMpv::load()?;
     let options = MpvOptions {
         audio: false,
@@ -109,6 +122,7 @@ fn run(project_root: &Path) -> Result<ProbeReport> {
 
     let mut plane_a = PlaneStats::new("A", media_a);
     let mut plane_b = PlaneStats::new("B", media_b);
+    let mut pan_zoom = PanZoomCheck::new();
 
     let started = Instant::now();
     let mut next_sample = started + Duration::from_secs(1);
@@ -119,6 +133,16 @@ fn run(project_root: &Path) -> Result<ProbeReport> {
 
         drain_events(&mut plane_a, &player_a);
         drain_events(&mut plane_b, &player_b);
+
+        // Once plane A is visibly playing, verify the pan/zoom properties with
+        // real set/readback round trips.
+        if !pan_zoom.attempted && player_a.time_pos() > PAN_ZOOM_DELAY_SECS {
+            pan_zoom.run(&player_a);
+            println!(
+                "PAN/ZOOM: {}",
+                if pan_zoom.passed() { "PASS" } else { "FAIL" }
+            );
+        }
 
         let now = Instant::now();
         if now >= next_sample {
@@ -136,10 +160,16 @@ fn run(project_root: &Path) -> Result<ProbeReport> {
     println!("{}", sample(&mut plane_a, &player_a));
     println!("{}", sample(&mut plane_b, &player_b));
 
+    if !pan_zoom.attempted {
+        pan_zoom.skip("video never started, pan/zoom was not exercised");
+    }
+
     Ok(ProbeReport {
         dll_path: lib.dll_path().to_path_buf(),
         elapsed: started.elapsed(),
         planes: vec![plane_a, plane_b],
+        input: input_check,
+        pan_zoom,
     })
 }
 
@@ -364,15 +394,255 @@ fn sample(stats: &mut PlaneStats, player: &MpvPlayer) -> String {
     )
 }
 
+/// Result of the synthetic pointer-event self test.
+struct InputCheck {
+    ok: bool,
+    lines: Vec<String>,
+}
+
+impl InputCheck {
+    fn passed(&self) -> bool {
+        self.ok
+    }
+}
+
+fn post_message(hwnd: i64, message: u32, wparam: WPARAM, lparam: LPARAM) -> bool {
+    // SAFETY: `hwnd` is a live window created by the probe on this thread.
+    unsafe { PostMessageW(hwnd as usize as HWND, message, wparam, lparam) != 0 }
+}
+
+fn pack_point(x: i32, y: i32) -> LPARAM {
+    (((y as u32 & 0xffff) << 16) | (x as u32 & 0xffff)) as LPARAM
+}
+
+fn pack_wheel(delta: i32) -> WPARAM {
+    (((delta as u32) & 0xffff) << 16) as WPARAM
+}
+
+/// Posts a scripted message sequence to a throwaway child surface and checks
+/// that [`take_input_events`] produced the matching structured events.
+fn run_input_check(parent: i64) -> InputCheck {
+    let mut lines = Vec::new();
+    let window = match ChildWindow::create(parent, INPUT_TEST_ID, "Input Test") {
+        Ok(window) => window,
+        Err(error) => {
+            return InputCheck {
+                ok: false,
+                lines: vec![format!("create failed: {error:#}")],
+            };
+        }
+    };
+    // Hide the surface so the real cursor can never add events to it.
+    window.show(false);
+    let hwnd = window.hwnd();
+    // Drop anything captured while the probe window was being created.
+    let _ = take_input_events();
+
+    let scripted = [
+        (WM_MOUSEMOVE, 0, pack_point(42, 24)),
+        (WM_LBUTTONDOWN, 0, pack_point(10, 20)),
+        (WM_MOUSEMOVE, 0, pack_point(20, 30)),
+        (WM_LBUTTONUP, 0, pack_point(20, 30)),
+        (WM_MOUSEWHEEL, pack_wheel(120), pack_point(50, 50)),
+        (WM_MOUSEWHEEL, pack_wheel(-120), pack_point(50, 50)),
+        (WM_MOUSELEAVE, 0, 0),
+        (WM_LBUTTONDBLCLK, 0, pack_point(30, 40)),
+        (WM_LBUTTONUP, 0, pack_point(30, 40)),
+    ];
+    let mut posted = 0usize;
+    for &(message, wparam, lparam) in &scripted {
+        if post_message(hwnd, message, wparam, lparam) {
+            posted += 1;
+        }
+    }
+
+    pump_messages();
+    let captured: Vec<MouseEvent> = take_input_events()
+        .into_iter()
+        .filter(|event| event.hwnd == hwnd)
+        .map(|event| event.event)
+        .collect();
+
+    let expected = [
+        MouseEvent::Move { x: 42, y: 24 },
+        MouseEvent::Down {
+            x: 10,
+            y: 20,
+            button: 0,
+        },
+        MouseEvent::Move { x: 20, y: 30 },
+        MouseEvent::Up {
+            x: 20,
+            y: 30,
+            button: 0,
+        },
+        MouseEvent::Wheel { delta: 120 },
+        MouseEvent::Wheel { delta: -120 },
+        MouseEvent::Leave,
+        MouseEvent::Down {
+            x: 30,
+            y: 40,
+            button: 0,
+        },
+        MouseEvent::DoubleClick,
+    ];
+
+    // Ordered subsequence: extra events from real-mouse noise are tolerated,
+    // but every scripted message must have produced its event, in order.
+    let mut search_from = 0usize;
+    let mut missing = Vec::new();
+    for wanted in &expected {
+        match captured[search_from..]
+            .iter()
+            .position(|event| event == wanted)
+        {
+            Some(offset) => search_from += offset + 1,
+            None => missing.push(*wanted),
+        }
+    }
+    let ok = posted == scripted.len() && missing.is_empty();
+
+    lines.push(format!(
+        "hwnd={hwnd} posts delivered={posted}/{} captured={}",
+        scripted.len(),
+        captured.len()
+    ));
+    lines.push(format!("expected: {expected:?}"));
+    lines.push(format!("captured: {captured:?}"));
+    if !missing.is_empty() {
+        lines.push(format!("missing: {missing:?}"));
+    }
+
+    InputCheck { ok, lines }
+}
+
+/// Result of the `video-pan` / `video-zoom` set-and-read-back check.
+struct PanZoomCheck {
+    attempted: bool,
+    ok: bool,
+    lines: Vec<String>,
+}
+
+impl PanZoomCheck {
+    fn new() -> Self {
+        Self {
+            attempted: false,
+            ok: false,
+            lines: Vec::new(),
+        }
+    }
+
+    fn passed(&self) -> bool {
+        self.attempted && self.ok
+    }
+
+    fn run(&mut self, player: &MpvPlayer) {
+        self.attempted = true;
+        self.ok = true;
+
+        let set = player.set_pan(0.25, -0.5);
+        self.record(
+            "set_pan(0.25, -0.5)",
+            format!(
+                "video-pan-x={} video-pan-y={}",
+                readback(player, "video-pan-x"),
+                readback(player, "video-pan-y")
+            ),
+            set && near(readback_number(player, "video-pan-x"), 0.25)
+                && near(readback_number(player, "video-pan-y"), -0.5),
+        );
+
+        let set = player.set_zoom(0.75);
+        self.record(
+            "set_zoom(0.75)",
+            format!("video-zoom={}", readback(player, "video-zoom")),
+            set && near(readback_number(player, "video-zoom"), 0.75),
+        );
+
+        let set = player.adjust_zoom(-0.5);
+        self.record(
+            "adjust_zoom(-0.5)",
+            format!("video-zoom={}", readback(player, "video-zoom")),
+            set && near(readback_number(player, "video-zoom"), 0.25),
+        );
+
+        let set = player.adjust_zoom(100.0);
+        self.record(
+            "adjust_zoom(100.0), clamped",
+            format!("video-zoom={}", readback(player, "video-zoom")),
+            set && near(readback_number(player, "video-zoom"), 3.0),
+        );
+
+        let set = player.adjust_zoom(-100.0);
+        self.record(
+            "adjust_zoom(-100.0), clamped",
+            format!("video-zoom={}", readback(player, "video-zoom")),
+            set && near(readback_number(player, "video-zoom"), -2.0),
+        );
+
+        let zoom_reset = player.set_zoom(0.0);
+        let pan_reset = player.set_pan(0.0, 0.0);
+        self.record(
+            "reset",
+            format!(
+                "video-zoom={} video-pan-x={} video-pan-y={}",
+                readback(player, "video-zoom"),
+                readback(player, "video-pan-x"),
+                readback(player, "video-pan-y")
+            ),
+            zoom_reset
+                && pan_reset
+                && near(readback_number(player, "video-zoom"), 0.0)
+                && near(readback_number(player, "video-pan-x"), 0.0)
+                && near(readback_number(player, "video-pan-y"), 0.0),
+        );
+    }
+
+    fn skip(&mut self, reason: &str) {
+        self.attempted = true;
+        self.ok = false;
+        self.lines.push(reason.to_owned());
+    }
+
+    fn record(&mut self, label: &str, detail: String, ok: bool) {
+        self.ok &= ok;
+        self.lines.push(format!(
+            "{label} -> {detail} [{}]",
+            if ok { "ok" } else { "FAIL" }
+        ));
+    }
+}
+
+fn readback(player: &MpvPlayer, name: &str) -> String {
+    player
+        .get_property(name)
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "None".to_owned())
+}
+
+fn readback_number(player: &MpvPlayer, name: &str) -> Option<f64> {
+    player.get_property(name)?.trim().parse().ok()
+}
+
+fn near(value: Option<f64>, expected: f64) -> bool {
+    value.is_some_and(|value| (value - expected).abs() < 1e-4)
+}
+
 struct ProbeReport {
     dll_path: PathBuf,
     elapsed: Duration,
     planes: Vec<PlaneStats>,
+    input: InputCheck,
+    pan_zoom: PanZoomCheck,
 }
 
 impl ProbeReport {
     fn passed(&self) -> bool {
-        self.planes.len() == 2 && self.planes.iter().all(PlaneStats::passed)
+        self.planes.len() == 2
+            && self.planes.iter().all(PlaneStats::passed)
+            && self.input.passed()
+            && self.pan_zoom.passed()
     }
 
     fn planes_summary(&self) -> String {
@@ -426,9 +696,32 @@ impl ProbeReport {
             "\nBoth planes reported VO: [gpu]: {}",
             yes_no(both_gpu)
         );
+
         let _ = writeln!(
             out,
-            "Result: {}",
+            "\nINPUT EVENTS: {}",
+            if self.input.passed() { "PASS" } else { "FAIL" }
+        );
+        for line in &self.input.lines {
+            let _ = writeln!(out, "  {line}");
+        }
+
+        let _ = writeln!(
+            out,
+            "\nPAN/ZOOM: {}",
+            if self.pan_zoom.passed() {
+                "PASS"
+            } else {
+                "FAIL"
+            }
+        );
+        for line in &self.pan_zoom.lines {
+            let _ = writeln!(out, "  {line}");
+        }
+
+        let _ = writeln!(
+            out,
+            "\nResult: {}",
             if self.passed() { "PASS" } else { "FAIL" }
         );
         out
