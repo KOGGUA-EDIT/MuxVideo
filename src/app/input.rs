@@ -30,8 +30,6 @@ const DRAG_SLOP: i32 = 5;
 const VOLUME_STEP: f64 = 4.0;
 /// Zoom per wheel notch.
 const ZOOM_STEP: f64 = 0.10;
-/// Horizontal travel, in pixels, that moves the playhead by one frame.
-const SCRUB_PIXELS_PER_FRAME: f64 = 1.0;
 const ZOOM_MIN: f64 = -2.0;
 const ZOOM_MAX: f64 = 3.0;
 
@@ -125,8 +123,12 @@ fn drag_to(app: &mut MuxApp, _ctx: &egui::Context, x: i32, y: i32) {
     }
     match drag.mode {
         Mode::Scrub => {
-            // One pixel of travel is one frame: the picture follows the hand.
-            let frames = f64::from(tx) / SCRUB_PIXELS_PER_FRAME;
+            // Travel per frame is user configurable (1 … 100 px).
+            let ppf = app.settings.scrub_ppf.clamp(
+                *super::state::SCRUB_PPF_RANGE.start(),
+                *super::state::SCRUB_PPF_RANGE.end(),
+            );
+            let frames = f64::from(tx) / ppf.max(0.01);
             let mut target = drag.frame0 + frames / fps;
             if duration > 0.0 {
                 target = target.clamp(0.0, duration);

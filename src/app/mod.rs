@@ -350,6 +350,9 @@ impl MuxApp {
         if !self.playlist.iter().any(|e| e.path == path) {
             self.playlist.push(PlayEntry::new(path.clone()));
         }
+        if let Some(index) = self.playlist.iter().position(|e| e.path == path) {
+            self.selected = Some(index);
+        }
         self.settings.recent.retain(|p| p != &path_str);
         self.settings.recent.insert(0, path_str);
         self.settings.recent.truncate(12);

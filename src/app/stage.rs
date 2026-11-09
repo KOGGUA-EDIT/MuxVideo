@@ -36,13 +36,25 @@ const SYNC_INTERVAL: Duration = Duration::from_millis(250);
 /// Physical pixel rectangle.
 type PxRect = (i32, i32, i32, i32);
 
-/// Source metadata shown next to the compare controls.
+/// Source metadata shown next to the compare controls and in the inspector.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MediaInfo {
     pub width: u32,
     pub height: u32,
     pub fps: f64,
     pub codec: String,
+    /// Demuxer name reported by mpv, e.g. `matroska,webm`.
+    pub container: String,
+    /// Seconds; `0.0` when unknown.
+    pub duration: f64,
+    /// `aac 2ch 48 kHz` style one-liner.
+    pub audio: String,
+    /// Video bitrate as `12.4 Mbps`.
+    pub bitrate: String,
+    /// Container/file size in bytes.
+    pub size: u64,
+    /// `yuv420p`, `nv12` … the pixel format mpv decodes to.
+    pub pix_fmt: String,
 }
 
 impl MediaInfo {
@@ -325,6 +337,7 @@ impl Media {
 
         let mut a_rect: Option<PxRect> = None;
         let mut b_rect: Option<PxRect> = None;
+        let mut a_clip: Option<PxRect> = None;
         let mut b_clip: Option<PxRect> = None;
 
         match mode {
@@ -362,10 +375,22 @@ impl Media {
                         let split = (wipe.clamp(0.0, 1.0)
                             * if axis == SplitAxis::Horizontal { w } else { h } as f32)
                             .round() as i32;
-                        b_clip = Some(match axis {
-                            SplitAxis::Horizontal => (split, 0, w - split, h),
-                            SplitAxis::Vertical => (0, split, w, h - split),
-                        });
+                        // Leave a 3 px hole at the seam so the egui-painted
+                        // divider shows through (native planes sit above egui).
+                        const SEAM: i32 = 3;
+                        let before = (split - SEAM).max(0);
+                        let after =
+                            (split + SEAM).min(if axis == SplitAxis::Horizontal { w } else { h });
+                        match axis {
+                            SplitAxis::Horizontal => {
+                                a_clip = Some((0, 0, before, h));
+                                b_clip = Some((after, 0, (w - after).max(0), h));
+                            }
+                            SplitAxis::Vertical => {
+                                a_clip = Some((0, 0, w, before));
+                                b_clip = Some((0, after, w, (h - after).max(0)));
+                            }
+                        }
                     }
                 } else if has_a {
                     a_rect = Some(full);
@@ -392,6 +417,7 @@ impl Media {
 
         self.plane_a.place(a_rect);
         self.plane_b.place(b_rect);
+        self.plane_a.clip(a_clip);
         self.plane_b.clip(b_clip);
     }
 
@@ -509,17 +535,93 @@ impl Media {
         let codec = player
             .get_property("video-format")
             .unwrap_or_else(|| "—".into());
+        let text = |name: &str| player.get_property(name).unwrap_or_default();
+        let container = pretty_container(&text("file-format"));
+        // After hwdec the pixelformat turns into `d3d11`; the sw format is
+        // what the user cares about, so prefer the hw-pixelformat in that case.
+        let pf = text("video-params/pixelformat");
+        let pix_fmt = if matches!(
+            pf.as_str(),
+            "d3d11" | "d3d11va" | "dxva2" | "vaapi" | "vdpau" | "cuda" | "videotoolbox"
+        ) {
+            text("video-params/hw-pixelformat")
+        } else {
+            pf
+        };
+        let audio_codec = text("audio-codec");
+        let audio = if audio_codec.is_empty() || audio_codec == "no" {
+            String::new()
+        } else {
+            let ch = number("audio-params/channel-count").unwrap_or(0.0) as i32;
+            let rate = number("audio-params/samplerate").unwrap_or(0.0) as i32;
+            let mut out = audio_codec;
+            if ch > 0 {
+                out.push_str(&format!(" {ch}ch"));
+            }
+            if rate > 0 {
+                out.push_str(&format!(" {} kHz", (rate as f64 / 1000.0).round()));
+            }
+            out
+        };
+        let duration = number("duration").unwrap_or(0.0);
+        let size = number("file-size").unwrap_or(0.0) as u64;
+        let bps = number("video-bitrate").filter(|v| *v > 0.0).or_else(|| {
+            // Some encodes do not report a bitrate; derive it from size.
+            (duration > 0.0 && size > 0)
+                .then(|| size as f64 * 8.0 / duration)
+                .filter(|v| *v > 0.0)
+        });
+        let bitrate = match bps {
+            Some(bps) if bps >= 1_000_000.0 => format!("{:.1} Mbps", bps / 1_000_000.0),
+            Some(bps) => format!("{:.0} Kbps", bps / 1000.0),
+            None => String::new(),
+        };
         let info = MediaInfo {
             width,
             height,
             fps,
             codec,
+            container,
+            duration,
+            audio,
+            bitrate,
+            size,
+            pix_fmt,
         };
         match plane {
             Plane::A => self.meta_a = Some(info),
             Plane::B => self.meta_b = Some(info),
         }
     }
+}
+
+/// Turns mpv's demuxer list into the name people use, e.g. `matroska,webm`
+/// becomes `Matroska / WebM`.
+fn pretty_container(raw: &str) -> String {
+    if raw.is_empty() {
+        return String::new();
+    }
+    let lower = raw.to_ascii_lowercase();
+    let named = if lower.contains("matroska") {
+        "Matroska / WebM"
+    } else if lower.contains("mov,mp4") || lower.contains("mp4") {
+        "MP4"
+    } else if lower.contains("avi") {
+        "AVI"
+    } else if lower.contains("mpegts") {
+        "MPEG-TS"
+    } else if lower.contains("flv") {
+        "FLV"
+    } else if lower.contains("ogg") {
+        "Ogg"
+    } else if lower.contains("wav") {
+        "WAV"
+    } else if lower.contains("aac") {
+        "AAC"
+    } else {
+        return raw.to_string();
+    };
+    named.to_string()
 }
 
 impl Drop for Media {

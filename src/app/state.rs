@@ -147,6 +147,8 @@ pub struct Settings {
     pub show_playlist: bool,
     /// `auto-safe`, `no`, `d3d11va` …
     pub hwdec: String,
+    /// Horizontal pixels per frame when scrubbing on the picture (1 … 100).
+    pub scrub_ppf: f64,
     /// Recently opened directory for the file picker.
     pub last_dir: String,
     /// Last files, restored as a playlist.
@@ -167,6 +169,7 @@ impl Default for Settings {
             loop_file: false,
             show_playlist: true,
             hwdec: "auto-safe".into(),
+            scrub_ppf: SCRUB_PPF_DEFAULT,
             last_dir: String::new(),
             recent: Vec::new(),
         }
@@ -340,6 +343,11 @@ pub const VIDEO_EXTS: &[&str] = &[
     "mp4", "mkv", "mov", "avi", "webm", "m4v", "mpg", "mpeg", "ts", "m2ts", "flv", "wmv", "ogv",
     "rmvb", "mts", "3gp",
 ];
+
+/// Default drag sensitivity: one frame every 20 px of horizontal travel.
+pub const SCRUB_PPF_DEFAULT: f64 = 20.0;
+/// Hard bounds for the scrub sensitivity, matching the settings slider.
+pub const SCRUB_PPF_RANGE: std::ops::RangeInclusive<f64> = 1.0..=100.0;
 
 pub fn is_video_path(path: &Path) -> bool {
     path.extension()

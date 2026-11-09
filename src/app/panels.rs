@@ -58,9 +58,10 @@ pub(super) fn playlist(ui: &mut Ui, app: &mut MuxApp) {
     }
 
     // List body.
+    let info_h = if app.selected.is_some() { 268.0 } else { 0.0 };
     let body = Rect::from_min_max(
         pos2(ui.min_rect().min.x, head.max.y + 4.0),
-        pos2(ui.max_rect().max.x, ui.max_rect().max.y - 34.0),
+        pos2(ui.max_rect().max.x, ui.max_rect().max.y - 34.0 - info_h),
     );
     ui.scope_builder(
         UiBuilder::new()
@@ -125,6 +126,179 @@ pub(super) fn playlist(ui: &mut Ui, app: &mut MuxApp) {
         FontId::proportional(10.5),
         p.outline,
     );
+
+    if app.selected.is_some() {
+        let info = Rect::from_min_max(
+            pos2(
+                ui.max_rect().min.x + 6.0,
+                ui.max_rect().max.y - 34.0 - info_h + 6.0,
+            ),
+            pos2(ui.max_rect().max.x - 6.0, ui.max_rect().max.y - 38.0),
+        );
+        media_info_panel(ui, app, info);
+    }
+}
+
+/// Inspector for the file selected in the playlist: everything mpv knows about
+/// the plane it is loaded into, or the on-disk facts when it is not loaded.
+fn media_info_panel(ui: &mut Ui, app: &MuxApp, rect: Rect) {
+    let p = app.palette.clone();
+    let Some(index) = app.selected else {
+        return;
+    };
+    let Some(entry) = app.playlist.get(index) else {
+        return;
+    };
+
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(16), p.surface_container_low);
+    let inner = rect.shrink2(vec2(14.0, 12.0));
+
+    let mut y = inner.min.y;
+    ui.painter().text(
+        pos2(inner.min.x, y + 8.0),
+        egui::Align2::LEFT_CENTER,
+        "媒体信息",
+        FontId::proportional(13.0),
+        p.on_surface,
+    );
+    let plane = if app.media.file_a.as_ref() == Some(&entry.path) {
+        Some("A 面")
+    } else if app.media.file_b.as_ref() == Some(&entry.path) {
+        Some("B 面")
+    } else {
+        None
+    };
+    ui.painter().text(
+        pos2(inner.max.x, y + 8.0),
+        egui::Align2::RIGHT_CENTER,
+        plane.unwrap_or("未载入"),
+        FontId::proportional(10.5),
+        if plane.is_some() {
+            p.primary
+        } else {
+            p.outline
+        },
+    );
+    y += 24.0;
+
+    let meta = match plane {
+        Some("A 面") => app.media.meta_a.clone(),
+        Some(_) => app.media.meta_b.clone(),
+        None => None,
+    };
+
+    let mut rows: Vec<(&str, String)> = Vec::new();
+    if let Some(m) = meta {
+        rows.push((
+            "分辨率",
+            format!(
+                "{}×{}{}",
+                m.width,
+                m.height,
+                if m.pix_fmt.is_empty() {
+                    String::new()
+                } else {
+                    format!(" · {}", m.pix_fmt)
+                }
+            ),
+        ));
+        rows.push((
+            "帧率",
+            if m.fps > 0.0 {
+                format!("{:.3} fps", m.fps)
+            } else {
+                "—".into()
+            },
+        ));
+        let dur = if m.duration > 0.0 {
+            m.duration
+        } else {
+            entry.size as f64 * 0.0
+        };
+        rows.push((
+            "时长",
+            if dur > 0.0 {
+                format!(
+                    "{} · {} 帧",
+                    super::state::format_timecode(dur, m.fps),
+                    super::state::frame_at(dur, m.fps)
+                )
+            } else {
+                "—".into()
+            },
+        ));
+        rows.push((
+            "容器",
+            if m.container.is_empty() {
+                "—".into()
+            } else {
+                m.container.clone()
+            },
+        ));
+        rows.push((
+            "视频编码",
+            if m.codec.is_empty() {
+                "—".into()
+            } else {
+                m.codec.clone()
+            },
+        ));
+        rows.push((
+            "码率",
+            if m.bitrate.is_empty() {
+                "—".into()
+            } else {
+                m.bitrate.clone()
+            },
+        ));
+        rows.push((
+            "音频",
+            if m.audio.is_empty() {
+                "无".into()
+            } else {
+                m.audio.clone()
+            },
+        ));
+        rows.push((
+            "文件大小",
+            super::state::format_size(if m.size > 0 { m.size } else { entry.size }),
+        ));
+    } else {
+        rows.push(("文件大小", super::state::format_size(entry.size)));
+        rows.push(("提示", "载入 A / B 面后显示完整信息".into()));
+    }
+
+    for (label, value) in rows {
+        if y + 16.0 > inner.max.y {
+            break;
+        }
+        ui.painter().text(
+            pos2(inner.min.x, y + 8.0),
+            egui::Align2::LEFT_CENTER,
+            label,
+            FontId::proportional(11.0),
+            p.on_surface_variant,
+        );
+        ui.painter().text(
+            pos2(inner.min.x + 62.0, y + 8.0),
+            egui::Align2::LEFT_CENTER,
+            super::bars::truncate(&value, 26),
+            FontId::monospace(11.0),
+            p.on_surface,
+        );
+        y += 21.0;
+    }
+
+    if y + 14.0 <= inner.max.y {
+        ui.painter().text(
+            pos2(inner.min.x, inner.max.y - 6.0),
+            egui::Align2::LEFT_CENTER,
+            super::bars::truncate(&entry.path.to_string_lossy(), 34),
+            FontId::proportional(10.0),
+            p.outline,
+        );
+    }
 }
 
 /// Draws one playlist row and returns the whole-row interaction.
@@ -411,6 +585,33 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                     }
                     ui.label(
                         egui::RichText::new(format!("{:.0}%", app.settings.volume))
+                            .size(11.5)
+                            .monospace()
+                            .color(p.on_surface_variant),
+                    );
+                });
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new("擦洗灵敏度")
+                            .size(12.5)
+                            .color(p.on_surface_variant),
+                    );
+                    ui.add_space(14.0);
+                    // Log scale so the whole 1 … 100 px/frame range is reachable.
+                    let (lo, hi) = (
+                        *super::state::SCRUB_PPF_RANGE.start(),
+                        *super::state::SCRUB_PPF_RANGE.end(),
+                    );
+                    let mut t = ((app.settings.scrub_ppf.clamp(lo, hi).ln() - lo.ln())
+                        / (hi.ln() - lo.ln())) as f32;
+                    if controls::slider(ui, &p, 160.0, &mut t, true).changed() {
+                        let v = (lo.ln() + t as f64 * (hi.ln() - lo.ln())).exp();
+                        app.settings.scrub_ppf = v.round().clamp(lo, hi);
+                        app.settings_dirty = true;
+                    }
+                    ui.label(
+                        egui::RichText::new(format!("{:.0} px / 帧", app.settings.scrub_ppf))
                             .size(11.5)
                             .monospace()
                             .color(p.on_surface_variant),

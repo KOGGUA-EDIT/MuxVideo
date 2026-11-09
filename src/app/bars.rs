@@ -477,6 +477,34 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
     if !app.has_video() {
         empty_stage(ui, app, stage);
     } else {
+        // Wipe mode leaves a 3 px hole between the native planes; paint the
+        // handle colour into it so the split line is always visible.
+        if app.settings.mode == CompareMode::Wipe && app.media.file_b.is_some() {
+            let frac = app.settings.wipe.clamp(0.0, 1.0);
+            let line = match app.settings.axis {
+                SplitAxis::Horizontal => {
+                    let x = stage.left() + stage.width() * frac;
+                    Rect::from_min_max(pos2(x - 3.0, stage.top()), pos2(x + 3.0, stage.bottom()))
+                }
+                SplitAxis::Vertical => {
+                    let y = stage.top() + stage.height() * frac;
+                    Rect::from_min_max(pos2(stage.left(), y - 3.0), pos2(stage.right(), y + 3.0))
+                }
+            };
+            ui.painter().rect_filled(
+                line.shrink2(vec2(
+                    0.0,
+                    if app.settings.axis == SplitAxis::Horizontal {
+                        0.0
+                    } else {
+                        1.0
+                    },
+                )),
+                CornerRadius::same(2),
+                p.primary,
+            );
+        }
+
         // Corner caption sits inside the stage but outside the video chrome.
         let caption = format!(
             "{} · {}",
