@@ -51,5 +51,5 @@ cargo build --offline
 
 ## 交付
 
-- \dist\\\ = 可运行最小集：\muxvideo.exe\ + \libmpv-2.dll\ + \README.txt\（不进 git，见 .gitignore）。
-- 重新发布：\cargo build --offline --release\ 后把 \	arget\\release\\muxvideo.exe\ 和 \	ools\\mpv\\libmpv-2.dll\ 拷到 \dist\\\。
+- `dist\` = 可运行最小集：`muxvideo.exe` + `libmpv-2.dll` + `README.txt`（不进 git，见 `.gitignore`）。
+- 重新发布：`cargo build --offline --release` 后把 `target\release\muxvideo.exe` 和 `tools\mpv\libmpv-2.dll` 拷到 `dist\`。
