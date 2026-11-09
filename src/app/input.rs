@@ -139,7 +139,6 @@ fn debug_log(event: &crate::video::InputEvent) {
 }
 
 fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
-    let _ = ctx;
     let fps = app.fps();
     let duration = app.duration();
     // Park playback before borrowing the gesture: a plain click never reaches
@@ -172,10 +171,10 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
             let plane = drag.plane;
             let frame0 = drag.frame0;
             let last_target = drag.last_target;
-            let ppf = app.settings.scrub_ppf.clamp(
-                *super::state::SCRUB_PPF_RANGE.start(),
-                *super::state::SCRUB_PPF_RANGE.end(),
-            );
+            // Frame-accurate by default (1 px = 1 frame); Shift gives ten times
+            // the precision for nudging a single frame out of a long clip.
+            let fine = ctx.input(|i| i.modifiers.shift);
+            let ppf: f64 = if fine { 10.0 } else { 1.0 };
             let frames = f64::from(tx) / ppf.max(0.01);
             let mut target = frame0 + frames / fps;
             if duration > 0.0 {

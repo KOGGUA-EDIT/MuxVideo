@@ -593,30 +593,16 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("擦洗灵敏度")
+                        egui::RichText::new("擦洗")
                             .size(12.5)
                             .color(p.on_surface_variant),
                     );
                     ui.add_space(14.0);
-                    // Log scale so the whole 1 … 100 px/frame range is reachable.
-                    let (lo, hi) = (
-                        *super::state::SCRUB_PPF_RANGE.start(),
-                        *super::state::SCRUB_PPF_RANGE.end(),
-                    );
-                    let mut t = ((app.settings.scrub_ppf.clamp(lo, hi).ln() - lo.ln())
-                        / (hi.ln() - lo.ln())) as f32;
-                    if controls::slider(ui, &p, 160.0, &mut t, true).changed() {
-                        let v = (lo.ln() + t as f64 * (hi.ln() - lo.ln())).exp();
-                        app.settings.scrub_ppf = v.round().clamp(lo, hi);
-                        app.settings_dirty = true;
-                    }
                     ui.label(
-                        egui::RichText::new(format!(
-                            "{:.0} px / 帧（越小越跟手）",
-                            app.settings.scrub_ppf
-                        ))
+                        egui::RichText::new(
+                            "拖动画面逐帧擦洗 · 1 px = 1 帧（按住 Shift 为 1/10 速）",
+                        )
                         .size(11.5)
-                        .monospace()
                         .color(p.on_surface_variant),
                     );
                 });
