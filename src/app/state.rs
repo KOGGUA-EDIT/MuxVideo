@@ -183,7 +183,15 @@ impl Default for Settings {
     }
 }
 
+/// Settings live in `%APPDATA%` so every copy of the exe (installed build, a
+/// `dist\` build, an old shortcut…) reads and writes the same file instead of
+/// silently drifting apart per executable directory.
 fn settings_path() -> PathBuf {
+    if let Some(dir) = std::env::var_os("APPDATA") {
+        let dir = PathBuf::from(dir).join("MuxVideo");
+        let _ = std::fs::create_dir_all(&dir);
+        return dir.join("muxvideo.settings.json");
+    }
     let base = std::env::current_exe()
         .ok()
         .and_then(|p| p.parent().map(Path::to_path_buf))
@@ -191,10 +199,28 @@ fn settings_path() -> PathBuf {
     base.join("muxvideo.settings.json")
 }
 
+/// Legacy per-exe-directory file, read once so existing users keep their setup.
+fn legacy_settings_path() -> Option<PathBuf> {
+    let base = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(Path::to_path_buf))?;
+    let path = base.join("muxvideo.settings.json");
+    (path != settings_path() && path.is_file()).then_some(path)
+}
+
 impl Settings {
     pub fn load() -> Self {
-        let path = settings_path();
-        let Ok(text) = std::fs::read_to_string(&path) else {
+        // Prefer the shared %APPDATA% file; fall back to a per-exe file left by
+        // an older build (or by another copy of the exe) and adopt it.
+        let mut migrated = false;
+        let mut text = std::fs::read_to_string(settings_path()).ok();
+        if text.is_none()
+            && let Some(legacy) = legacy_settings_path()
+        {
+            text = std::fs::read_to_string(&legacy).ok();
+            migrated = text.is_some();
+        }
+        let Some(text) = text else {
             return Self::default();
         };
         let mut s: Self = serde_json::from_str(&text).unwrap_or_default();
@@ -202,11 +228,13 @@ impl Settings {
             // v2: the scrub sensitivity default was wrong (20 px per frame made
             // dragging look broken on long clips); every older file gets the
             // responsive 1 px = 1 frame back.
-            // v3: the sensitivity slider is gone — scrubbing is always frame
-            // accurate, holding Shift is the slow mode — so the stored value is
-            // normalised away instead of quietly changing how dragging feels.
+            // v3: the sensitivity is back in the UI, keyed off cfg_version so the
+            // stored value is only reset once instead of on every launch.
             s.scrub_ppf = SCRUB_PPF_DEFAULT;
             s.cfg_version = CONFIG_VERSION;
+            migrated = true;
+        }
+        if migrated {
             s.save();
         }
         s
