@@ -1,0 +1,8 @@
+/target
+/.cargo-home
+/tools/download
+/tools/*.log
+/tools/*.txt
+/media
+/muxvideo.settings.json
+__pycache__

@@ -1,0 +1,47 @@
+[package]
+name = "muxvideo"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "MuxVideo — a Material You video comparison and viewer built on mpv"
+authors = ["MuxVideo"]
+
+[lib]
+name = "muxvideo"
+path = "src/lib.rs"
+
+[[bin]]
+name = "muxvideo"
+path = "src/main.rs"
+
+[[bin]]
+name = "mpv_probe"
+path = "src/bin/mpv_probe.rs"
+
+[[bin]]
+name = "theme_showcase"
+path = "src/bin/theme_showcase.rs"
+
+[dependencies]
+anyhow = "1.0"
+eframe = { version = "=0.33.3", default-features = false, features = [
+    "accesskit",
+    "default_fonts",
+    "glow",
+] }
+libloading = "0.8"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+windows-sys = { version = "0.61", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_HiDpi",
+    "Win32_UI_WindowsAndMessaging",
+    "Win32_UI_Controls_Dialogs",
+] }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
