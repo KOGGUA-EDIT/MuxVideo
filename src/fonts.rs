@@ -39,11 +39,7 @@ pub fn install(ctx: &egui::Context) {
         std::sync::Arc::new(egui::FontData::from_owned(bytes.clone())),
     );
     for family in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
-        fonts
-            .families
-            .entry(family)
-            .or_default()
-            .push(name.clone());
+        fonts.families.entry(family).or_default().push(name.clone());
     }
     ctx.set_fonts(fonts);
 

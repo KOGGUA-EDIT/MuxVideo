@@ -27,18 +27,47 @@ use crate::mpv::{LibMpv, MpvEvent, MpvOptions, MpvPlayer};
 use crate::video::childwin::{ChildWindow, find_window_by_title};
 
 /// Title of the eframe toplevel; used to find the HWND we parent into.
-const WINDOW_TITLE: &str = "MuxVideo";
+pub(crate) const WINDOW_TITLE: &str = "MuxVideo";
 
 /// Slave drift tolerated before B is nudged back onto A.
 const MAX_DRIFT_SECS: f64 = 0.08;
+/// Blend graph for difference mode: two inputs, per-pixel absolute difference.
+const DIFF_GRAPH: &str = "[vid1][vid2]blend=all_mode=difference[vo]";
 /// How often the drift check runs.
 const SYNC_INTERVAL: Duration = Duration::from_millis(250);
 
 /// Physical pixel rectangle.
 type PxRect = (i32, i32, i32, i32);
 
+/// Source metadata shown next to the compare controls.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MediaInfo {
+    pub width: u32,
+    pub height: u32,
+    pub fps: f64,
+    pub codec: String,
+}
+
+impl MediaInfo {
+    /// Compact one-line summary, e.g. 1280×720 30p h264.
+    pub fn summary(&self) -> String {
+        if self.width == 0 && self.height == 0 {
+            return String::new();
+        }
+        let mut out = format!("{}×{}", self.width, self.height);
+        if self.fps > 0.0 {
+            out.push_str(&format!(" {:.0}p", self.fps));
+        }
+        if !self.codec.is_empty() && self.codec != "—" {
+            out.push(' ');
+            out.push_str(&self.codec);
+        }
+        out
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Plane {
+pub(crate) enum Plane {
     A,
     B,
     D,
@@ -134,8 +163,14 @@ pub(crate) struct Media {
     pub file_a: Option<PathBuf>,
     pub file_b: Option<PathBuf>,
 
+    /// Resolution / fps / codec, filled in after each FileLoaded.
+    pub meta_a: Option<MediaInfo>,
+    pub meta_b: Option<MediaInfo>,
+
     /// True while the lavfi-complex blend instance is loading.
     pub diff_pending: bool,
+    /// How many inputs the difference plane has loaded so far.
+    diff_loaded: u8,
     last_sync: Instant,
     pub drift: f64,
 }
@@ -154,7 +189,10 @@ impl Default for Media {
             player_d: None,
             file_a: None,
             file_b: None,
+            meta_a: None,
+            meta_b: None,
             diff_pending: false,
+            diff_loaded: 0,
             last_sync: Instant::now(),
             drift: 0.0,
         }
@@ -212,12 +250,23 @@ impl Media {
         if hwnd == 0 {
             anyhow::bail!("视频平面句柄无效");
         }
-        lib.new_player(hwnd, opts)
+        let player = lib.new_player(hwnd, opts)?;
+        // Only the A plane carries audio; B is a visual reference and playing
+        // both would merely double the sound with a slight echo.
+        if plane == Plane::B {
+            player.set_mute(true);
+        }
+        Ok(player)
     }
 
     // ── loading ───────────────────────────────────────────────────────────
 
-    pub fn open_a(&mut self, lib: &Arc<LibMpv>, path: &Path, opts: &MpvOptions) -> anyhow::Result<()> {
+    pub fn open_a(
+        &mut self,
+        lib: &Arc<LibMpv>,
+        path: &Path,
+        opts: &MpvOptions,
+    ) -> anyhow::Result<()> {
         if self.player_a.is_none() {
             let player = self.spawn_player(lib, Plane::A, opts)?;
             self.player_a = Some(player);
@@ -229,7 +278,12 @@ impl Media {
         Ok(())
     }
 
-    pub fn open_b(&mut self, lib: &Arc<LibMpv>, path: &Path, opts: &MpvOptions) -> anyhow::Result<()> {
+    pub fn open_b(
+        &mut self,
+        lib: &Arc<LibMpv>,
+        path: &Path,
+        opts: &MpvOptions,
+    ) -> anyhow::Result<()> {
         if self.player_b.is_none() {
             let player = self.spawn_player(lib, Plane::B, opts)?;
             self.player_b = Some(player);
@@ -259,12 +313,36 @@ impl Media {
             self.player_d = Some(player);
         }
         if let Some(player) = &self.player_d {
-            player.set_property("lavfi-complex", "[vid1][vid2]blend=all_mode=difference[vo]");
+            // The filter graph can only be applied once both inputs exist, so
+            // the loads go first and `note_diff_loaded` applies the graph after
+            // the second `FileLoaded` event arrives.
             player.load_file(&a.to_string_lossy());
             player.load_file_append(&b.to_string_lossy());
         }
         self.diff_pending = true;
+        self.diff_loaded = 0;
         Ok(())
+    }
+
+    /// Counts `FileLoaded` events on the difference plane.
+    ///
+    /// Returns `true` exactly once, when the second input is in and the
+    /// difference graph still has to be applied.
+    pub fn note_diff_loaded(&mut self) -> bool {
+        self.diff_loaded = self.diff_loaded.saturating_add(1);
+        if self.diff_pending && self.diff_loaded >= 2 {
+            self.diff_pending = false;
+            return true;
+        }
+        false
+    }
+
+    /// Sets the blend graph; `false` means mpv rejected it.
+    pub fn apply_difference_graph(&mut self) -> bool {
+        match &self.player_d {
+            Some(player) => player.set_property("lavfi-complex", DIFF_GRAPH),
+            None => false,
+        }
     }
 
     pub fn close_difference(&mut self) {
@@ -272,11 +350,19 @@ impl Media {
             player.stop();
         }
         self.diff_pending = false;
+        self.diff_loaded = 0;
     }
 
     // ── layout ────────────────────────────────────────────────────────────
 
-    pub fn sync_layout(&mut self, stage: Rect, ppp: f32, mode: CompareMode, axis: SplitAxis, wipe: f32) {
+    pub fn sync_layout(
+        &mut self,
+        stage: Rect,
+        ppp: f32,
+        mode: CompareMode,
+        axis: SplitAxis,
+        wipe: f32,
+    ) {
         if !self.ensure_native() {
             return;
         }
@@ -289,11 +375,18 @@ impl Media {
         let w = ((stage.width() * ppp).round() as i32).max(0);
         let h = ((stage.height() * ppp).round() as i32).max(0);
         let rect = (x, y, w, h);
+        let any_video = self.player_a.is_some() || self.player_b.is_some();
+        // No media yet: shrink the native box away so the egui empty state shows.
+        let rect = if any_video && w >= 8 && h >= 8 {
+            rect
+        } else {
+            (0, 0, 0, 0)
+        };
         if self.container_rect != rect {
-            container.set_rect(x, y, w, h);
+            container.set_rect(rect.0, rect.1, rect.2, rect.3);
             self.container_rect = rect;
         }
-        if w < 8 || h < 8 {
+        if w < 8 || h < 8 || !any_video {
             self.plane_a.place(None);
             self.plane_b.place(None);
             self.plane_d.place(None);
@@ -325,11 +418,17 @@ impl Media {
                         let (ra, rb) = match axis {
                             SplitAxis::Horizontal => {
                                 let half = w / 2;
-                                ((0, 0, half.saturating_sub(1), h), (half + 1, 0, w - half - 1, h))
+                                (
+                                    (0, 0, half.saturating_sub(1), h),
+                                    (half + 1, 0, w - half - 1, h),
+                                )
                             }
                             SplitAxis::Vertical => {
                                 let half = h / 2;
-                                ((0, 0, w, half.saturating_sub(1)), (0, half + 1, w, h - half - 1))
+                                (
+                                    (0, 0, w, half.saturating_sub(1)),
+                                    (0, half + 1, w, h - half - 1),
+                                )
                             }
                         };
                         a_rect = Some(ra);
@@ -385,11 +484,15 @@ impl Media {
     }
 
     /// Keeps B (the slave) within a few frames of A (the master).
+    /// Keeps the visible slaves aligned with the A plane.
+    ///
+    /// A is always the master. Hidden planes are paused so they do not burn
+    /// decode time, and the difference instance is nudged onto A's clock.
     pub fn sync_playback(&mut self, mode: CompareMode) {
-        let (Some(a), Some(b)) = (self.player_a.as_ref(), self.player_b.as_ref()) else {
+        let Some(a) = self.player_a.as_ref() else {
             return;
         };
-        if !mode.needs_b() || self.last_sync.elapsed() < SYNC_INTERVAL {
+        if self.last_sync.elapsed() < SYNC_INTERVAL {
             return;
         }
         self.last_sync = Instant::now();
@@ -397,20 +500,27 @@ impl Media {
         if ta <= 0.0 {
             return;
         }
-        let tb = b.time_pos();
-        self.drift = ta - tb;
-        if self.drift.abs() > MAX_DRIFT_SECS || tb <= 0.0 {
-            b.seek_absolute(ta);
+
+        // B: only decoded while it is on screen.
+        if let Some(b) = self.player_b.as_ref() {
+            if self.plane_b.visible && mode.needs_b() && self.player_d.is_none() {
+                let tb = b.time_pos();
+                self.drift = ta - tb;
+                if self.drift.abs() > MAX_DRIFT_SECS || tb <= 0.0 {
+                    b.seek_absolute(ta);
+                }
+            } else if !b.paused() {
+                b.set_pause(true);
+            }
         }
-    }
 
-    /// True when the B plane is on screen.
-    pub fn b_visible(&self) -> bool {
-        self.plane_b.visible
-    }
-
-    pub fn ready(&self) -> bool {
-        self.container.is_some() && self.plane_a.hwnd != 0
+        // D: the blend instance follows A so the wipe/difference stays honest.
+        if let Some(d) = self.player_d.as_ref() {
+            let td = d.time_pos();
+            if (ta - td).abs() > MAX_DRIFT_SECS || td <= 0.0 {
+                d.seek_absolute(ta);
+            }
+        }
     }
 
     pub fn player_of(&self, plane: Plane) -> Option<&MpvPlayer> {
@@ -421,11 +531,35 @@ impl Media {
         }
     }
 
-    pub fn plane_label(plane: Plane) -> &'static str {
+    /// Reads resolution / frame rate / codec once a file finished loading.
+    pub fn refresh_meta(&mut self, plane: Plane) {
+        let Some(player) = self.player_of(plane) else {
+            return;
+        };
+        let number = |name: &str| -> Option<f64> {
+            player
+                .get_property(name)
+                .and_then(|v| v.parse::<f64>().ok())
+        };
+        let width = number("width").unwrap_or(0.0) as u32;
+        let height = number("height").unwrap_or(0.0) as u32;
+        let fps = number("estimated-vf-fps")
+            .filter(|v| *v > 0.0)
+            .or_else(|| number("container-fps").filter(|v| *v > 0.0))
+            .unwrap_or(0.0);
+        let codec = player
+            .get_property("video-format")
+            .unwrap_or_else(|| "—".into());
+        let info = MediaInfo {
+            width,
+            height,
+            fps,
+            codec,
+        };
         match plane {
-            Plane::A => "A",
-            Plane::B => "B",
-            Plane::D => "D",
+            Plane::A => self.meta_a = Some(info),
+            Plane::B => self.meta_b = Some(info),
+            Plane::D => {}
         }
     }
 }
@@ -443,4 +577,3 @@ impl Drop for Media {
         }
     }
 }
-

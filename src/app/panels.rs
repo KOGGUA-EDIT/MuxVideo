@@ -1,11 +1,11 @@
 //! Right-hand playlist panel and the settings screen.
 
 use eframe::egui::{
-    self, Align, Color32, CornerRadius, FontId, Layout, Rect, Sense, Stroke, StrokeKind, Ui,
-    UiBuilder, Vec2, pos2, vec2,
+    self, Align, Color32, CornerRadius, FontId, Layout, Rect, Sense, Stroke, Ui, UiBuilder, Vec2,
+    pos2, vec2,
 };
 
-use super::controls::{self, icon_button};
+use super::controls::{self};
 use super::icons;
 use super::state::{RailTab, Settings, format_size, parse_hex};
 use super::{MuxApp, Target};
@@ -23,7 +23,8 @@ pub(super) fn playlist(ui: &mut Ui, app: &mut MuxApp) {
 
     // Header.
     let (head, _) = ui.allocate_exact_size(vec2(width, 46.0), Sense::hover());
-    ui.painter().rect_filled(head, CornerRadius::ZERO, p.surface);
+    ui.painter()
+        .rect_filled(head, CornerRadius::ZERO, p.surface);
     ui.painter().text(
         pos2(head.min.x + 10.0, head.center().y),
         egui::Align2::LEFT_CENTER,
@@ -39,10 +40,8 @@ pub(super) fn playlist(ui: &mut Ui, app: &mut MuxApp) {
         p.on_surface_variant,
     );
 
-    let add_rect = Rect::from_center_size(
-        pos2(head.max.x - 18.0, head.center().y),
-        Vec2::splat(32.0),
-    );
+    let add_rect =
+        Rect::from_center_size(pos2(head.max.x - 18.0, head.center().y), Vec2::splat(32.0));
     let add = ui.interact(add_rect, ui.id().with("pl-add"), Sense::click());
     if add.hovered() {
         ui.painter()
@@ -185,20 +184,15 @@ fn playlist_row(
 
     // Plane assignment chips.
     let chip_size = vec2(40.0, 24.0);
-    let a_rect = Rect::from_min_size(
-        pos2(rect.max.x - 96.0, rect.center().y - 12.0),
-        chip_size,
-    );
-    let b_rect = Rect::from_min_size(
-        pos2(rect.max.x - 50.0, rect.center().y - 12.0),
-        chip_size,
-    );
+    let a_rect = Rect::from_min_size(pos2(rect.max.x - 96.0, rect.center().y - 12.0), chip_size);
+    let b_rect = Rect::from_min_size(pos2(rect.max.x - 50.0, rect.center().y - 12.0), chip_size);
+    let listed = app.playlist_path(index);
     for (plane, chip_rect, label) in [(Target::A, a_rect, "A"), (Target::B, b_rect, "B")] {
         let id = ui.id().with(("pl-chip", index, label));
         let resp = ui.interact(chip_rect, id, Sense::click());
         let active = match plane {
-            Target::A => app.media.file_a.as_deref() == Some(app.playlist_path(index)),
-            _ => app.media.file_b.as_deref() == Some(app.playlist_path(index)),
+            Target::A => app.media.file_a.as_deref() == listed,
+            _ => app.media.file_b.as_deref() == listed,
         };
         let fill = if active {
             p.primary
@@ -207,36 +201,46 @@ fn playlist_row(
         } else {
             p.surface_container
         };
-        ui.painter().rect_filled(chip_rect, CornerRadius::same(8), fill);
+        ui.painter()
+            .rect_filled(chip_rect, CornerRadius::same(8), fill);
         ui.painter().text(
             chip_rect.center(),
             egui::Align2::CENTER_CENTER,
             label,
             FontId::proportional(11.5),
-            if active { p.on_primary } else { p.on_surface_variant },
+            if active {
+                p.on_primary
+            } else {
+                p.on_surface_variant
+            },
         );
-        resp.on_hover_text(if plane == Target::A {
+        let _ = resp.on_hover_text(if plane == Target::A {
             "载入 A 面"
         } else {
             "载入 B 面"
-        })
-        .clone();
+        });
     }
     response
 }
 
 /// Chip hit-testing for the row (returns the plane to load into).
 fn row_action(ui: &Ui, app: &MuxApp, row: Rect, index: usize) -> Option<Target> {
-    let a_rect = Rect::from_min_size(pos2(row.max.x - 96.0, row.center().y - 12.0), vec2(40.0, 24.0));
-    let b_rect = Rect::from_min_size(pos2(row.max.x - 50.0, row.center().y - 12.0), vec2(40.0, 24.0));
-    if ui.ctx().input(|i| i.pointer.any_click()) {
-        if let Some(pos) = ui.ctx().input(|i| i.pointer.interact_pos()) {
-            if a_rect.contains(pos) {
-                return Some(Target::A);
-            }
-            if b_rect.contains(pos) {
-                return Some(Target::B);
-            }
+    let a_rect = Rect::from_min_size(
+        pos2(row.max.x - 96.0, row.center().y - 12.0),
+        vec2(40.0, 24.0),
+    );
+    let b_rect = Rect::from_min_size(
+        pos2(row.max.x - 50.0, row.center().y - 12.0),
+        vec2(40.0, 24.0),
+    );
+    if ui.ctx().input(|i| i.pointer.any_click())
+        && let Some(pos) = ui.ctx().input(|i| i.pointer.interact_pos())
+    {
+        if a_rect.contains(pos) {
+            return Some(Target::A);
+        }
+        if b_rect.contains(pos) {
+            return Some(Target::B);
         }
     }
     let _ = (app, index);
@@ -280,7 +284,11 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                 section_title(ui, &p, "外观");
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("配色").size(12.5).color(p.on_surface_variant));
+                    ui.label(
+                        egui::RichText::new("配色")
+                            .size(12.5)
+                            .color(p.on_surface_variant),
+                    );
                     ui.add_space(12.0);
                     for (label, dark) in [("深色", true), ("浅色", false)] {
                         let selected = app.settings.dark == dark;
@@ -292,7 +300,11 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                     }
                 });
                 ui.add_space(12.0);
-                ui.label(egui::RichText::new("主题色").size(12.5).color(p.on_surface_variant));
+                ui.label(
+                    egui::RichText::new("主题色")
+                        .size(12.5)
+                        .color(p.on_surface_variant),
+                );
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     for seed in SEEDS {
@@ -305,7 +317,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                             ui.painter().circle_stroke(
                                 rect.center(),
                                 15.5,
-                                Stroke::new(2.0, p.on_surface),
+                                Stroke::new(2.0_f32, p.on_surface),
                             );
                         }
                         if resp.clicked() {
@@ -338,7 +350,11 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                 section_title(ui, &p, "播放");
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("硬件解码").size(12.5).color(p.on_surface_variant));
+                    ui.label(
+                        egui::RichText::new("硬件解码")
+                            .size(12.5)
+                            .color(p.on_surface_variant),
+                    );
                     ui.add_space(14.0);
                     for value in ["auto-safe", "d3d11va", "no"] {
                         let selected = app.settings.hwdec == value;
@@ -356,7 +372,11 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                 });
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("循环当前文件").size(12.5).color(p.on_surface_variant));
+                    ui.label(
+                        egui::RichText::new("循环当前文件")
+                            .size(12.5)
+                            .color(p.on_surface_variant),
+                    );
                     ui.add_space(14.0);
                     let mut on = app.settings.loop_file;
                     if controls::switch(ui, &p, &mut on).changed() {
@@ -364,7 +384,11 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                         app.apply_loop();
                     }
                     ui.add_space(24.0);
-                    ui.label(egui::RichText::new("恢复上次列表").size(12.5).color(p.on_surface_variant));
+                    ui.label(
+                        egui::RichText::new("显示播放列表")
+                            .size(12.5)
+                            .color(p.on_surface_variant),
+                    );
                     ui.add_space(14.0);
                     let mut on = app.settings.show_playlist;
                     if controls::switch(ui, &p, &mut on).changed() {
@@ -374,7 +398,11 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                 });
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
-                    ui.label(egui::RichText::new("默认音量").size(12.5).color(p.on_surface_variant));
+                    ui.label(
+                        egui::RichText::new("默认音量")
+                            .size(12.5)
+                            .color(p.on_surface_variant),
+                    );
                     ui.add_space(14.0);
                     let mut vol = (app.settings.volume / 130.0) as f32;
                     if controls::slider(ui, &p, 160.0, &mut vol, true).changed() {

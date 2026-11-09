@@ -7,6 +7,7 @@ mod open_dialog;
 mod panels;
 pub mod stage;
 pub mod state;
+mod window;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -62,7 +63,10 @@ pub struct MuxApp {
 
     /// Scrub position while the progress slider is being dragged.
     pub(super) scrub: Option<f64>,
-    pub(super) open_hint: bool,
+    /// Files to open on the first frame, when the native window already exists.
+    pending: Vec<(PathBuf, Target)>,
+    /// Whether the DWM frame attributes were already applied.
+    frame_dressed: bool,
 }
 
 impl MuxApp {
@@ -80,8 +84,13 @@ impl MuxApp {
         let playlist: Vec<PlayEntry> = settings
             .recent
             .iter()
-            .filter(|p| state::is_video_path(std::path::Path::new(p)))
-            .map(PlayEntry::new)
+            .filter_map(|p| {
+                let path = std::path::Path::new(p);
+                if !path.is_absolute() || !path.is_file() || !state::is_video_path(path) {
+                    return None;
+                }
+                Some(PlayEntry::new(path.to_path_buf()))
+            })
             .collect();
 
         let palette_scheme = settings.dark;
@@ -103,11 +112,22 @@ impl MuxApp {
             settings_dirty: false,
             last_save: Instant::now(),
             scrub: None,
-            open_hint: false,
+            pending: Vec::new(),
+            frame_dressed: false,
         };
         app.palette = Palette::from_seed(app.settings.seed_color(), app.settings.scheme());
         crate::ui::install_style(&cc.egui_ctx, &app.palette);
         let _ = palette_scheme;
+
+        // Files given on the command line: first goes to A, the rest queue for B.
+        let mut target = Target::Auto;
+        for arg in std::env::args().skip(1) {
+            let path = PathBuf::from(arg);
+            if path.is_file() {
+                app.pending.push((path, target));
+                target = Target::B;
+            }
+        }
         app
     }
 
@@ -153,10 +173,6 @@ impl MuxApp {
         self.media.player_a.is_some() || self.media.player_b.is_some()
     }
 
-    pub(super) fn needs_b(&self) -> bool {
-        self.settings.mode.needs_b() && self.media.file_b.is_none()
-    }
-
     /// One place where players are created, so volume/speed/loop stay in sync.
     fn configure(&self, player: &crate::mpv::MpvPlayer) {
         player.set_volume(self.settings.volume);
@@ -182,7 +198,12 @@ impl MuxApp {
     }
 
     pub(super) fn toggle_play(&mut self) {
-        let Some(master) = self.media.player_a.as_ref().or(self.media.player_b.as_ref()) else {
+        let Some(master) = self
+            .media
+            .player_a
+            .as_ref()
+            .or(self.media.player_b.as_ref())
+        else {
             return;
         };
         let paused = master.paused();
@@ -220,7 +241,12 @@ impl MuxApp {
     }
 
     pub(super) fn step_frame(&mut self, forward: bool) {
-        let Some(master) = self.media.player_a.as_ref().or(self.media.player_b.as_ref()) else {
+        let Some(master) = self
+            .media
+            .player_a
+            .as_ref()
+            .or(self.media.player_b.as_ref())
+        else {
             return;
         };
         master.set_pause(true);
@@ -299,6 +325,7 @@ impl MuxApp {
         };
 
         // Track in the playlist and in the recent list.
+        let path = std::path::absolute(&path).unwrap_or(path);
         let path_str = path.to_string_lossy().to_string();
         if !self.playlist.iter().any(|e| e.path == path) {
             self.playlist.push(PlayEntry::new(path.clone()));
@@ -347,7 +374,12 @@ impl MuxApp {
                 )));
                 if target == Target::B {
                     // Align B with A and hold both on the same frame.
-                    let pos = self.media.player_a.as_ref().map(|p| p.time_pos()).unwrap_or(0.0);
+                    let pos = self
+                        .media
+                        .player_a
+                        .as_ref()
+                        .map(|p| p.time_pos())
+                        .unwrap_or(0.0);
                     if let Some(b) = &self.media.player_b {
                         b.seek_absolute(pos);
                         b.set_pause(true);
@@ -410,7 +442,12 @@ impl MuxApp {
         }
         // Comparing always starts paused and aligned.
         if mode.needs_b() && self.media.player_b.is_some() {
-            let pos = self.media.player_a.as_ref().map(|p| p.time_pos()).unwrap_or(0.0);
+            let pos = self
+                .media
+                .player_a
+                .as_ref()
+                .map(|p| p.time_pos())
+                .unwrap_or(0.0);
             if let Some(b) = &self.media.player_b {
                 b.seek_absolute(pos);
             }
@@ -424,9 +461,20 @@ impl MuxApp {
         for (plane, event) in self.media.pump() {
             match event {
                 MpvEvent::FileLoaded { .. } => {
-                    if plane == 'D' {
-                        self.media.diff_pending = false;
+                    match plane {
+                        'A' => self.media.refresh_meta(stage::Plane::A),
+                        'B' => self.media.refresh_meta(stage::Plane::B),
+                        _ => {
+                            if self.media.note_diff_loaded() && !self.media.apply_difference_graph()
+                            {
+                                self.toast = Some(Toast::error(
+                                    "差值模式：mpv 拒绝了 lavfi-complex 混合图".to_string(),
+                                ));
+                            }
+                            ctx.request_repaint();
+                        }
                     }
+                    ctx.request_repaint();
                 }
                 MpvEvent::EndFile { reason } => {
                     if reason.contains("error") {
@@ -528,6 +576,35 @@ impl MuxApp {
 
     // ── per-frame sync ────────────────────────────────────────────────────
 
+    /// Undecorated windows need their own resize borders.
+    fn resize_borders(&self, ctx: &egui::Context) {
+        let Some(pointer) = ctx.input(|i| i.pointer.hover_pos()) else {
+            return;
+        };
+        let rect = ctx.content_rect();
+        const EDGE: f32 = 6.0;
+        let west = pointer.x <= rect.left() + EDGE;
+        let east = pointer.x >= rect.right() - EDGE;
+        let north = pointer.y <= rect.top() + EDGE;
+        let south = pointer.y >= rect.bottom() - EDGE;
+        use egui::viewport::ResizeDirection as Dir;
+        let (dir, cursor) = match (west, east, north, south) {
+            (true, _, true, _) => (Dir::NorthWest, egui::CursorIcon::ResizeNwSe),
+            (true, _, _, true) => (Dir::SouthWest, egui::CursorIcon::ResizeNeSw),
+            (_, true, true, _) => (Dir::NorthEast, egui::CursorIcon::ResizeNeSw),
+            (_, true, _, true) => (Dir::SouthEast, egui::CursorIcon::ResizeNwSe),
+            (true, ..) => (Dir::West, egui::CursorIcon::ResizeHorizontal),
+            (_, true, ..) => (Dir::East, egui::CursorIcon::ResizeHorizontal),
+            (_, _, true, _) => (Dir::North, egui::CursorIcon::ResizeVertical),
+            (_, _, _, true) => (Dir::South, egui::CursorIcon::ResizeVertical),
+            _ => return,
+        };
+        ctx.set_cursor_icon(cursor);
+        if ctx.input(|i| i.pointer.primary_pressed()) {
+            ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
+        }
+    }
+
     fn sync_stage(&mut self, ctx: &egui::Context) {
         let hidden = self.rail == RailTab::Settings;
         let rect = if hidden || !self.stage_reported {
@@ -536,8 +613,13 @@ impl MuxApp {
             self.stage_rect
         };
         let ppp = ctx.pixels_per_point();
-        self.media
-            .sync_layout(rect, ppp, self.settings.mode, self.settings.axis, self.settings.wipe);
+        self.media.sync_layout(
+            rect,
+            ppp,
+            self.settings.mode,
+            self.settings.axis,
+            self.settings.wipe,
+        );
         self.media.sync_playback(self.settings.mode);
         self.stage_reported = false;
     }
@@ -561,8 +643,14 @@ impl MuxApp {
         }
         ctx.request_repaint_after(Duration::from_millis(120));
         let anchor = egui::Align2::LEFT_BOTTOM;
+        // Keep the snackbar above the transport bar so it never covers controls.
+        let lift = if self.rail == RailTab::Settings {
+            24.0
+        } else {
+            TRANSPORT_H + 16.0
+        };
         egui::Area::new(egui::Id::new("mux-toast"))
-            .anchor(anchor, egui::vec2(24.0, -24.0))
+            .anchor(anchor, egui::vec2(RAIL_W + 16.0, -lift))
             .order(egui::Order::Foreground)
             .show(ctx, |ui| {
                 let fill = if toast.error {
@@ -593,6 +681,21 @@ impl MuxApp {
 impl eframe::App for MuxApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frame_no += 1;
+        self.resize_borders(ctx);
+
+        // Command-line files open on the first frame, once the native window exists.
+        let pending = std::mem::take(&mut self.pending);
+        for (path, target) in pending {
+            self.open_path(path, target);
+        }
+
+        // Native window polish: rounded DWM corners, done once the HWND exists.
+        if !self.frame_dressed
+            && let Some(hwnd) = crate::video::childwin::find_window_by_title(stage::WINDOW_TITLE)
+        {
+            window::apply_modern_frame(hwnd);
+            self.frame_dressed = true;
+        }
 
         // Files dropped onto the window.
         let dropped: Vec<PathBuf> = ctx.input(|i| {
@@ -684,20 +787,6 @@ impl eframe::App for MuxApp {
 impl MuxApp {
     pub(super) fn boot_error(&self) -> Option<&str> {
         self.boot_error.as_deref()
-    }
-}
-
-/// Bounds-safe helper used by the bars.
-pub(super) fn clamp01(v: f32) -> f32 {
-    v.clamp(0.0, 1.0)
-}
-
-/// Shorthand for `Instant::now()`-based strings in the diagnostics line.
-pub(super) fn plane_name(plane: char) -> &'static str {
-    match plane {
-        'A' => "A",
-        'B' => "B",
-        _ => "D",
     }
 }
 

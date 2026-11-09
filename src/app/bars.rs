@@ -1,8 +1,8 @@
 //! Chrome drawing: title bar, navigation rail, compare bar, stage and transport.
 
 use eframe::egui::{
-    self, Align, Align2, Color32, CornerRadius, FontId, Layout, Rect, Sense, Stroke, StrokeKind, Ui,
-    UiBuilder, Vec2, pos2, vec2,
+    self, Align, Align2, Color32, CornerRadius, FontId, Layout, Rect, Sense, Stroke, StrokeKind,
+    Ui, UiBuilder, Vec2, pos2, vec2,
 };
 
 use super::controls::{self, icon_button};
@@ -15,7 +15,10 @@ fn file_badge(ui: &mut Ui, app: &mut MuxApp, plane: Target) {
     let p = app.palette.clone();
     let (path, tint) = match plane {
         Target::A => (app.media.file_a.clone(), p.primary_container),
-        _ => (app.media.file_b.clone(), controls::container(p.tertiary, p.surface)),
+        _ => (
+            app.media.file_b.clone(),
+            controls::container(p.tertiary, p.surface),
+        ),
     };
     let path = path.as_deref();
     let (label, name) = match path {
@@ -37,11 +40,9 @@ fn file_badge(ui: &mut Ui, app: &mut MuxApp, plane: Target) {
     } else {
         p.on_surface_variant
     };
-    let galley = ui.painter().layout_no_wrap(
-        name.clone(),
-        FontId::proportional(12.0),
-        text_color,
-    );
+    let galley = ui
+        .painter()
+        .layout_no_wrap(name.clone(), FontId::proportional(12.0), text_color);
     let size = vec2(galley.size().x + 44.0, 26.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let hover = ui
@@ -65,7 +66,11 @@ fn file_badge(ui: &mut Ui, app: &mut MuxApp, plane: Target) {
     ui.painter().rect_filled(
         tag_rect,
         CornerRadius::same(5),
-        if path.is_some() { tint } else { p.surface_container_high },
+        if path.is_some() {
+            tint
+        } else {
+            p.surface_container_high
+        },
     );
     ui.painter().text(
         tag_rect.center(),
@@ -141,14 +146,9 @@ fn window_button(
 pub(super) fn titlebar(ui: &mut Ui, app: &mut MuxApp) {
     let p = app.palette.clone();
     let bar = ui.max_rect();
-    let drag = ui.interact(
-        bar,
-        ui.id().with("titlebar-drag"),
-        Sense::click_and_drag(),
-    );
+    let drag = ui.interact(bar, ui.id().with("titlebar-drag"), Sense::click_and_drag());
     if drag.dragged() {
-        ui.ctx()
-            .send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
     }
     if drag.double_clicked() {
         let maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
@@ -191,7 +191,13 @@ pub(super) fn titlebar(ui: &mut Ui, app: &mut MuxApp) {
             file_badge(ui, app, Target::B);
             ui.add_space(6.0);
             if app.settings.mode == CompareMode::Difference {
-                controls::badge(ui, &p, "DIFF", controls::container(p.tertiary, p.surface), p.on_surface);
+                controls::badge(
+                    ui,
+                    &p,
+                    "DIFF",
+                    controls::container(p.tertiary, p.surface),
+                    p.on_surface,
+                );
             }
 
             // Right cluster: window controls, then toggles.
@@ -236,7 +242,12 @@ pub(super) fn titlebar(ui: &mut Ui, app: &mut MuxApp) {
 }
 
 /// Navigation rail item: pill behind the icon, caption underneath.
-fn rail_item(ui: &mut Ui, app: &mut MuxApp, tab: RailTab, glyph: fn(&mut Ui, f32, Color32) -> egui::Response) {
+fn rail_item(
+    ui: &mut Ui,
+    app: &mut MuxApp,
+    tab: RailTab,
+    glyph: fn(&mut Ui, f32, Color32) -> egui::Response,
+) {
     let p = app.palette.clone();
     let active = app.rail == tab;
     let size = vec2(64.0, 62.0);
@@ -244,10 +255,7 @@ fn rail_item(ui: &mut Ui, app: &mut MuxApp, tab: RailTab, glyph: fn(&mut Ui, f32
     let hover = ui
         .ctx()
         .animate_bool_with_time(response.id, response.hovered(), 0.12);
-    let pill = Rect::from_center_size(
-        pos2(rect.center().x, rect.min.y + 16.0),
-        vec2(56.0, 32.0),
-    );
+    let pill = Rect::from_center_size(pos2(rect.center().x, rect.min.y + 16.0), vec2(56.0, 32.0));
     let fill = if active {
         p.secondary_container
     } else if hover > 0.0 {
@@ -277,7 +285,11 @@ fn rail_item(ui: &mut Ui, app: &mut MuxApp, tab: RailTab, glyph: fn(&mut Ui, f32
         Align2::CENTER_CENTER,
         tab.label(),
         FontId::proportional(11.5),
-        if active { p.on_surface } else { p.on_surface_variant },
+        if active {
+            p.on_surface
+        } else {
+            p.on_surface_variant
+        },
     );
     response.clone().on_hover_text(tab.label());
     if response.clicked() {
@@ -297,7 +309,8 @@ fn rail_item(ui: &mut Ui, app: &mut MuxApp, tab: RailTab, glyph: fn(&mut Ui, f32
 pub(super) fn rail(ui: &mut Ui, app: &mut MuxApp) {
     let p = app.palette.clone();
     let full = ui.max_rect();
-    ui.painter().rect_filled(full, CornerRadius::ZERO, p.surface);
+    ui.painter()
+        .rect_filled(full, CornerRadius::ZERO, p.surface);
 
     ui.scope_builder(
         UiBuilder::new()
@@ -323,10 +336,7 @@ pub(super) fn rail(ui: &mut Ui, app: &mut MuxApp) {
     );
 
     // Bottom cluster pinned to the rail foot.
-    let foot = Rect::from_min_max(
-        pos2(full.min.x, full.max.y - 96.0),
-        full.max,
-    );
+    let foot = Rect::from_min_max(pos2(full.min.x, full.max.y - 96.0), full.max);
     ui.scope_builder(
         UiBuilder::new()
             .max_rect(foot)
@@ -357,10 +367,7 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
     let p = app.palette.clone();
 
     // Compare bar.
-    let (bar_rect, _) = ui.allocate_exact_size(
-        vec2(ui.available_width(), 50.0),
-        Sense::hover(),
-    );
+    let (bar_rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 50.0), Sense::hover());
     ui.scope_builder(
         UiBuilder::new()
             .max_rect(bar_rect)
@@ -419,8 +426,10 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
                     }
                     ui.add_space(6.0);
                 }
-                if app.media.file_b.is_none() {
-                    if controls::pill_button(ui, &p, "载入 B", false, Some(icons::playlist)).clicked() {
+                if app.settings.mode.needs_b() && app.media.file_b.is_none() {
+                    if controls::pill_button(ui, &p, "载入 B", false, Some(icons::playlist))
+                        .clicked()
+                    {
                         app.pick_files(ui.ctx(), Target::B);
                     }
                     ui.add_space(6.0);
@@ -445,15 +454,12 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
     app.stage_rect = stage;
     app.stage_reported = true;
 
-    ui.painter().rect_filled(
-        stage,
-        CornerRadius::same(18),
-        p.surface_container_lowest,
-    );
+    ui.painter()
+        .rect_filled(stage, CornerRadius::same(18), p.surface_container_lowest);
     ui.painter().rect_stroke(
         stage,
         CornerRadius::same(18),
-        Stroke::new(1.0, p.outline_variant.gamma_multiply(0.5)),
+        Stroke::new(1.0_f32, p.outline_variant.gamma_multiply(0.5)),
         StrokeKind::Inside,
     );
 
@@ -497,7 +503,7 @@ fn empty_stage(ui: &mut Ui, app: &mut MuxApp, stage: Rect) {
     ui.painter().rect_stroke(
         center.shrink(2.0),
         CornerRadius::same(16),
-        Stroke::new(1.2, p.outline_variant),
+        Stroke::new(1.2_f32, p.outline_variant),
         StrokeKind::Inside,
     );
 
@@ -531,11 +537,13 @@ fn empty_stage(ui: &mut Ui, app: &mut MuxApp, stage: Rect) {
             );
             ui.add_space(16.0);
             ui.horizontal(|ui| {
-                if controls::pill_button(ui, &p, "打开 A 面", true, Some(icons::play)).clicked() {
+                if controls::pill_button(ui, &p, "打开 A 面", true, Some(icons::play)).clicked()
+                {
                     app.pick_files(ui.ctx(), Target::A);
                 }
                 ui.add_space(8.0);
-                if controls::pill_button(ui, &p, "打开 B 面", false, Some(icons::compare)).clicked() {
+                if controls::pill_button(ui, &p, "打开 B 面", false, Some(icons::compare)).clicked()
+                {
                     app.pick_files(ui.ctx(), Target::B);
                 }
             });
@@ -662,7 +670,10 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
                 app.step_frame(false);
             }
             ui.add_space(6.0);
-            if play_button(ui, app).on_hover_text("播放 / 暂停（空格）").clicked() {
+            if play_button(ui, app)
+                .on_hover_text("播放 / 暂停（空格）")
+                .clicked()
+            {
                 app.toggle_play();
             }
             ui.add_space(6.0);
@@ -674,7 +685,11 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
             }
             ui.add_space(10.0);
             let info = if app.has_video() {
-                format!("{} / {}", app.settings.mode.label(), app.settings.axis.label())
+                format!(
+                    "{} / {}",
+                    app.settings.mode.label(),
+                    app.settings.axis.label()
+                )
             } else {
                 "无媒体".to_string()
             };
@@ -684,13 +699,42 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
                     .color(p.on_surface_variant),
             );
 
+            // Source metadata for whichever planes are loaded.
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(meta) = &app.media.meta_a {
+                let summary = meta.summary();
+                if !summary.is_empty() {
+                    parts.push(format!("A {summary}"));
+                }
+            }
+            if let Some(meta) = &app.media.meta_b {
+                let summary = meta.summary();
+                if !summary.is_empty() {
+                    parts.push(format!("B {summary}"));
+                }
+            }
+            if !parts.is_empty() {
+                ui.add_space(10.0);
+                ui.label(
+                    egui::RichText::new(parts.join("  ·  "))
+                        .size(10.5)
+                        .color(p.outline),
+                );
+            }
+
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 // Volume mute toggle.
-                if icon_button(ui, &p, 34.0, false, if app.settings.muted {
-                    icons::mute
-                } else {
-                    icons::volume
-                })
+                if icon_button(
+                    ui,
+                    &p,
+                    34.0,
+                    false,
+                    if app.settings.muted {
+                        icons::mute
+                    } else {
+                        icons::volume
+                    },
+                )
                 .on_hover_text("静音（M）")
                 .clicked()
                 {
@@ -739,5 +783,3 @@ fn trim_speed(speed: f64) -> String {
         format!("{speed:.2}")
     }
 }
-
-

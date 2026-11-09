@@ -26,7 +26,11 @@ pub fn pick_videos(owner: i64, initial_dir: Option<&str>) -> Vec<PathBuf> {
 
     let mut ofn: OPENFILENAMEW = unsafe { std::mem::zeroed() };
     ofn.lStructSize = std::mem::size_of::<OPENFILENAMEW>() as u32;
-    ofn.hwndOwner = if owner > 0 { owner as *mut core::ffi::c_void } else { std::ptr::null_mut() };
+    ofn.hwndOwner = if owner > 0 {
+        owner as *mut core::ffi::c_void
+    } else {
+        std::ptr::null_mut()
+    };
     ofn.lpstrFilter = filter.as_ptr();
     ofn.lpstrFile = file_buf.as_mut_ptr();
     ofn.nMaxFile = file_buf.len() as u32;

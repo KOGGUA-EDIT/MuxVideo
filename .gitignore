@@ -6,3 +6,5 @@
 /media
 /muxvideo.settings.json
 __pycache__
+/dist
+/tools/mpv

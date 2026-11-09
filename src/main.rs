@@ -1,5 +1,8 @@
 //! MuxVideo — Material You video comparison & viewer on top of mpv.
 
+// Release builds are a GUI app; debug builds keep the console for logs.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 fn main() -> anyhow::Result<()> {
     let options = eframe::NativeOptions {
         viewport: eframe::egui::ViewportBuilder::default()

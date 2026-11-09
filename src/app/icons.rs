@@ -37,14 +37,21 @@ impl Icon {
     }
 
     fn line(&self, a: (f32, f32), b: (f32, f32)) -> Shape {
-        Shape::line_segment([self.point(a.0, a.1), self.point(b.0, b.1)], Stroke::new(self.stroke, self.color))
+        Shape::line_segment(
+            [self.point(a.0, a.1), self.point(b.0, b.1)],
+            Stroke::new(self.stroke, self.color),
+        )
     }
 
     fn round_rect(&self, x: f32, y: f32, w: f32, h: f32, radius: f32, fill: bool) -> Shape {
         let s = self.rect.width() / GRID;
         let r = Rect::from_min_size(self.point(x, y), Vec2::new(w * s, h * s));
         if fill {
-            Shape::rect_filled(r, egui::CornerRadius::same((radius * s).round() as u8), self.color)
+            Shape::rect_filled(
+                r,
+                egui::CornerRadius::same((radius * s).round() as u8),
+                self.color,
+            )
         } else {
             Shape::rect_stroke(
                 r,
@@ -66,7 +73,12 @@ impl Icon {
     }
 }
 
-fn icon(ui: &mut egui::Ui, size: f32, color: Color32, paint: impl FnOnce(&Icon) -> Vec<Shape>) -> egui::Response {
+fn icon(
+    ui: &mut egui::Ui,
+    size: f32,
+    color: Color32,
+    paint: impl FnOnce(&Icon) -> Vec<Shape>,
+) -> egui::Response {
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(size), egui::Sense::hover());
     if ui.is_rect_visible(rect) {
         let icon = Icon {
@@ -82,7 +94,9 @@ fn icon(ui: &mut egui::Ui, size: f32, color: Color32, paint: impl FnOnce(&Icon) 
 }
 
 pub fn play(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response {
-    icon(ui, size, color, |i| vec![i.filled(&[(7.0, 4.5), (19.0, 12.0), (7.0, 19.5)])])
+    icon(ui, size, color, |i| {
+        vec![i.filled(&[(7.0, 4.5), (19.0, 12.0), (7.0, 19.5)])]
+    })
 }
 
 pub fn pause(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response {
@@ -115,7 +129,14 @@ pub fn step_forward(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Respo
 pub fn volume(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response {
     icon(ui, size, color, |i| {
         vec![
-            i.filled(&[(4.0, 9.5), (8.0, 9.5), (13.0, 5.0), (13.0, 19.0), (8.0, 14.5), (4.0, 14.5)]),
+            i.filled(&[
+                (4.0, 9.5),
+                (8.0, 9.5),
+                (13.0, 5.0),
+                (13.0, 19.0),
+                (8.0, 14.5),
+                (4.0, 14.5),
+            ]),
             i.polygon(&[(16.0, 8.5), (18.6, 12.0), (16.0, 15.5)], false),
         ]
     })
@@ -124,7 +145,14 @@ pub fn volume(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response {
 pub fn mute(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response {
     icon(ui, size, color, |i| {
         vec![
-            i.filled(&[(4.0, 9.5), (8.0, 9.5), (13.0, 5.0), (13.0, 19.0), (8.0, 14.5), (4.0, 14.5)]),
+            i.filled(&[
+                (4.0, 9.5),
+                (8.0, 9.5),
+                (13.0, 5.0),
+                (13.0, 19.0),
+                (8.0, 14.5),
+                (4.0, 14.5),
+            ]),
             i.line((16.0, 9.0), (20.5, 15.0)),
             i.line((20.5, 9.0), (16.0, 15.0)),
         ]
@@ -134,7 +162,10 @@ pub fn mute(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response {
 pub fn loop_icon(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response {
     icon(ui, size, color, |i| {
         vec![
-            i.polygon(&[(6.0, 8.0), (18.0, 8.0), (18.0, 14.0), (14.0, 14.0)], false),
+            i.polygon(
+                &[(6.0, 8.0), (18.0, 8.0), (18.0, 14.0), (14.0, 14.0)],
+                false,
+            ),
             i.line((18.0, 8.0), (18.0, 14.0)),
             i.line((18.0, 12.0), (7.0, 12.0)),
         ]
@@ -143,9 +174,17 @@ pub fn loop_icon(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response
 
 pub fn folder_open(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response {
     icon(ui, size, color, |i| {
-        vec![
-            i.polygon(&[(3.5, 7.0), (10.0, 7.0), (12.0, 9.5), (20.5, 9.5), (20.5, 18.0), (3.5, 18.0)], true),
-        ]
+        vec![i.polygon(
+            &[
+                (3.5, 7.0),
+                (10.0, 7.0),
+                (12.0, 9.5),
+                (20.5, 9.5),
+                (20.5, 18.0),
+                (3.5, 18.0),
+            ],
+            true,
+        )]
     })
 }
 
@@ -236,7 +275,10 @@ pub fn grid(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response {
 
 pub fn close(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response {
     icon(ui, size, color, |i| {
-        vec![i.line((6.5, 6.5), (17.5, 17.5)), i.line((17.5, 6.5), (6.5, 17.5))]
+        vec![
+            i.line((6.5, 6.5), (17.5, 17.5)),
+            i.line((17.5, 6.5), (6.5, 17.5)),
+        ]
     })
 }
 
@@ -245,7 +287,9 @@ pub fn minimize(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response 
 }
 
 pub fn maximize(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response {
-    icon(ui, size, color, |i| vec![i.round_rect(6.0, 6.0, 12.0, 12.0, 1.5, false)])
+    icon(ui, size, color, |i| {
+        vec![i.round_rect(6.0, 6.0, 12.0, 12.0, 1.5, false)]
+    })
 }
 
 pub fn chevron_down(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response {

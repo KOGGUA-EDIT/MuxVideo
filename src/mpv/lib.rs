@@ -145,7 +145,7 @@ mpv_api! {
         fn(MpvHandle, *const c_char, *const c_char) -> c_int;
     get_property_string: "mpv_get_property_string", b"mpv_get_property_string\0" =>
         fn(MpvHandle, *const c_char) -> *mut c_char;
-    free: "mpv_free", b"mpv_free\0" => fn(*mut c_void);
+    free: "mpv_free", b"mpv_free\0" => fn(*mut c_void) -> ();
     observe_property: "mpv_observe_property", b"mpv_observe_property\0" =>
         fn(MpvHandle, u64, *const c_char, c_int) -> c_int;
     unobserve_property: "mpv_unobserve_property", b"mpv_unobserve_property\0" =>
@@ -155,9 +155,9 @@ mpv_api! {
     request_log_messages: "mpv_request_log_messages", b"mpv_request_log_messages\0" =>
         fn(MpvHandle, *const c_char) -> c_int;
     set_wakeup_callback: "mpv_set_wakeup_callback", b"mpv_set_wakeup_callback\0" =>
-        fn(MpvHandle, Option<unsafe extern "C" fn(*mut c_void)>, *mut c_void);
+        fn(MpvHandle, Option<unsafe extern "C" fn(*mut c_void)>, *mut c_void) -> ();
     terminate_destroy: "mpv_terminate_destroy", b"mpv_terminate_destroy\0" =>
-        fn(MpvHandle);
+        fn(MpvHandle) -> ();
     error_string: "mpv_error_string", b"mpv_error_string\0" =>
         fn(c_int) -> *const c_char;
     client_api_version: "mpv_client_api_version", b"mpv_client_api_version\0" =>
@@ -220,8 +220,8 @@ impl LibMpv {
         // SAFETY: loading a shared library executes its initialisation code but
         // reads no memory we own. The handle is kept in `Self` until every
         // function pointer below has been dropped.
-        let library = unsafe { Library::new(path) }
-            .with_context(|| format!("loading {}", path.display()))?;
+        let library =
+            unsafe { Library::new(path) }.with_context(|| format!("loading {}", path.display()))?;
 
         // SAFETY: the library is held in `library` (and then in `Self`) for the
         // whole time the resolved function pointers are used.
@@ -251,17 +251,17 @@ impl LibMpv {
     fn candidates() -> Vec<PathBuf> {
         let mut paths = Vec::with_capacity(6);
 
-        if let Some(explicit) = std::env::var_os("MUXVIDEO_LIBMPV") {
-            if !explicit.is_empty() {
-                paths.push(PathBuf::from(explicit));
-            }
+        if let Some(explicit) = std::env::var_os("MUXVIDEO_LIBMPV")
+            && !explicit.is_empty()
+        {
+            paths.push(PathBuf::from(explicit));
         }
 
-        if let Ok(exe) = std::env::current_exe() {
-            if let Some(dir) = exe.parent() {
-                paths.push(dir.join(DLL_NAME));
-                paths.push(dir.join("tools").join("mpv").join(DLL_NAME));
-            }
+        if let Ok(exe) = std::env::current_exe()
+            && let Some(dir) = exe.parent()
+        {
+            paths.push(dir.join(DLL_NAME));
+            paths.push(dir.join("tools").join("mpv").join(DLL_NAME));
         }
 
         // `target/debug/mpv_probe.exe` lives two levels below the project root,
@@ -274,9 +274,7 @@ impl LibMpv {
             paths.push(cwd.join("tools").join("mpv").join(DLL_NAME));
         }
 
-        paths.push(
-            PathBuf::from(r"D:\ruanjian\mpv\mpv.net-DW v2.1.0").join(DLL_NAME),
-        );
+        paths.push(PathBuf::from(r"D:\ruanjian\mpv\mpv.net-DW v2.1.0").join(DLL_NAME));
 
         let mut unique: Vec<PathBuf> = Vec::with_capacity(paths.len());
         for path in paths {
@@ -300,7 +298,11 @@ mod tests {
         let mut deduped = candidates.clone();
         deduped.sort();
         deduped.dedup();
-        assert_eq!(candidates.len(), deduped.len(), "candidate list contains duplicates");
+        assert_eq!(
+            candidates.len(),
+            deduped.len(),
+            "candidate list contains duplicates"
+        );
 
         let project_copy = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("tools")
