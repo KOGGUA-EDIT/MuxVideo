@@ -23,20 +23,20 @@ use eframe::egui::{self, Color32, CornerRadius, Mesh, Rect, Response, Sense, Sha
 use crate::ui::Palette;
 
 /// How tall the track band is (Material 3 Expressive uses 8 px, not 4 px).
-const TRACK_HEIGHT: f32 = 8.0;
+const TRACK_HEIGHT: f32 = 10.0;
 /// Radius of the rounded track ends, in whole pixels.
-const TRACK_RADIUS_PX: u8 = 4;
+const TRACK_RADIUS_PX: u8 = 5;
 /// Horizontal track inset: leaves room for the handle's 40 px state layer.
 const TRACK_INSET: f32 = 10.0;
 /// Height reserved by the widget; fits the 40 px state layer.
 const HEIGHT: f32 = 40.0;
 
 /// Peak wave displacement from the track centre line.
-const WAVE_AMPLITUDE: f32 = 3.5;
+const WAVE_AMPLITUDE: f32 = 4.5;
 /// Distance between wave crests.
-const WAVE_LENGTH: f32 = 22.0;
+const WAVE_LENGTH: f32 = 46.0;
 /// Scroll speed of the wave, in pixels per second.
-const PHASE_SPEED: f32 = 52.0;
+const PHASE_SPEED: f32 = 30.0;
 /// Seconds the wave takes to grow from flat to full amplitude (and back).
 const WAVE_ANIMATION: f32 = 0.8;
 /// Horizontal distance over which the wave ramps in from the flat start.

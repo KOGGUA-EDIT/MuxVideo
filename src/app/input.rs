@@ -5,9 +5,10 @@
 //! stream into the interactions a review player is expected to have:
 //!
 //! * click — play / pause
-//! * drag — move the window (like mpv's `--window-dragging`)
-//! * drag in wipe mode — move the split line
-//! * middle drag — pan the picture (RV style)
+//! * drag — scrub the playhead frame by frame (RV Player style: the picture
+//!   follows the cursor, one pixel of travel is one frame)
+//! * right drag in wipe mode — move the split line
+//! * middle drag — pan the picture
 //! * wheel — volume, `Ctrl`+wheel — zoom
 //! * double click — fullscreen
 
@@ -29,14 +30,16 @@ const DRAG_SLOP: i32 = 5;
 const VOLUME_STEP: f64 = 4.0;
 /// Zoom per wheel notch.
 const ZOOM_STEP: f64 = 0.10;
+/// Horizontal travel, in pixels, that moves the playhead by one frame.
+const SCRUB_PIXELS_PER_FRAME: f64 = 1.0;
 const ZOOM_MIN: f64 = -2.0;
 const ZOOM_MAX: f64 = 3.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
-    /// Left press that moves the window once it leaves the slop radius.
-    Window,
-    /// Left press that moves the wipe split line.
+    /// Left press that drags the playhead frame by frame (RV Player style).
+    Scrub,
+    /// Right press that moves the wipe split line.
     Wipe,
     /// Middle press that pans the picture.
     Pan,
@@ -47,6 +50,10 @@ pub(crate) struct Drag {
     mode: Mode,
     start: (i32, i32),
     last: (i32, i32),
+    /// Playhead when the press happened, in seconds.
+    frame0: f64,
+    /// Last seek target, so we do not flood mpv with duplicate seeks.
+    last_target: f64,
     moved: bool,
     began: Instant,
 }
@@ -79,22 +86,31 @@ pub(super) fn pump(app: &mut MuxApp, ctx: &egui::Context) {
 
 fn press(app: &mut MuxApp, plane: Plane, x: i32, y: i32, button: u8) {
     let mode = match button {
-        0 if app.settings.mode == CompareMode::Wipe => Mode::Wipe,
-        0 => Mode::Window,
+        0 => Mode::Scrub,
+        1 if app.settings.mode == CompareMode::Wipe => Mode::Wipe,
         2 => Mode::Pan,
         _ => return,
     };
+    let frame0 = app.time_pos();
+    if mode == Mode::Scrub {
+        // Park the picture so each frame is visible while dragging.
+        app.set_paused(true);
+    }
     app.gesture = Some(Drag {
         plane,
         mode,
         start: (x, y),
         last: (x, y),
+        frame0,
+        last_target: frame0,
         moved: false,
         began: Instant::now(),
     });
 }
 
-fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
+fn drag_to(app: &mut MuxApp, _ctx: &egui::Context, x: i32, y: i32) {
+    let fps = app.fps();
+    let duration = app.duration();
     let Some(drag) = app.gesture.as_mut() else {
         return;
     };
@@ -103,14 +119,35 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
     let (tx, ty) = (x - drag.start.0, y - drag.start.1);
     if !drag.moved && (tx.abs() > DRAG_SLOP || ty.abs() > DRAG_SLOP) {
         drag.moved = true;
-        if drag.mode == Mode::Window {
-            ctx.send_viewport_cmd(egui::ViewportCommand::StartDrag);
-        }
     }
     if !drag.moved {
         return;
     }
     match drag.mode {
+        Mode::Scrub => {
+            // One pixel of travel is one frame: the picture follows the hand.
+            let frames = f64::from(tx) / SCRUB_PIXELS_PER_FRAME;
+            let mut target = drag.frame0 + frames / fps;
+            if duration > 0.0 {
+                target = target.clamp(0.0, duration);
+            } else {
+                target = target.max(0.0);
+            }
+            // Re-issuing a seek every mouse move starves the decoder; once per
+            // half frame is plenty for the eye and cheap for mpv.
+            if (target - drag.last_target).abs() >= 0.5 / fps {
+                drag.last_target = target;
+                let target = target;
+                app.scrub = Some(target);
+                app.media.seek_all(target);
+                let total = crate::app::state::frame_at(duration, fps);
+                app.toast = Some(crate::app::state::Toast::info(format!(
+                    "帧 {} / {}",
+                    crate::app::state::frame_at(target, fps),
+                    total
+                )));
+            }
+        }
         Mode::Wipe => {
             if let Some((w, _)) = app.media.plane_size(drag.plane) {
                 let frac = (x as f32 / w.max(1) as f32).clamp(0.02, 0.98);
@@ -129,7 +166,6 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
                 app.media.apply_pan_zoom(app.pan, app.zoom);
             }
         }
-        Mode::Window => {}
     }
 }
 
@@ -141,9 +177,13 @@ fn release(app: &mut MuxApp) {
     let suppressed = app
         .suppress_click
         .is_some_and(|at| at.elapsed() < Duration::from_millis(CLICK_MAX_MS));
-    if !drag.moved && drag.mode == Mode::Window && quick && !suppressed {
-        app.suppress_click = None;
-        app.toggle_play();
+    if drag.mode == Mode::Scrub {
+        // Scrubbing leaves the player parked on the frame under the cursor.
+        app.scrub = None;
+        if !drag.moved && quick && !suppressed {
+            app.suppress_click = None;
+            app.toggle_play();
+        }
     }
 }
 

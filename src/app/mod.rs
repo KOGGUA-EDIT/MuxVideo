@@ -177,6 +177,16 @@ impl MuxApp {
         self.active_player().map(|p| p.duration()).unwrap_or(0.0)
     }
 
+    /// Frame rate of whichever plane is loaded, for timecode and frame maths.
+    pub(super) fn fps(&self) -> f64 {
+        self.media
+            .meta_a
+            .as_ref()
+            .or(self.media.meta_b.as_ref())
+            .map(|m| m.fps)
+            .unwrap_or(30.0)
+    }
+
     pub(super) fn time_pos(&self) -> f64 {
         self.scrub
             .unwrap_or_else(|| self.active_player().map(|p| p.time_pos()).unwrap_or(0.0))

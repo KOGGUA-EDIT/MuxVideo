@@ -7,7 +7,7 @@ use eframe::egui::{
 
 use super::controls::{self, icon_button};
 use super::icons;
-use super::state::{CompareMode, RailTab, SplitAxis, format_time};
+use super::state::{CompareMode, RailTab, SplitAxis, format_timecode, frame_at};
 use super::{MuxApp, TITLEBAR_H, Target};
 
 /// Draws one plane tag ("A" / "B") plus its file name, or a hint when empty.
@@ -611,7 +611,7 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
     let p = app.palette.clone();
     let card = ui.max_rect();
     ui.painter()
-        .rect_filled(card, CornerRadius::same(24), p.surface_container_low);
+        .rect_filled(card, CornerRadius::same(28), p.surface_container_low);
 
     let inner = card.shrink2(vec2(22.0, 10.0));
 
@@ -624,14 +624,15 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
         |ui| {
             let dur = app.duration();
             let pos = app.time_pos().min(if dur > 0.0 { dur } else { f64::MAX });
-            let label_w = 64.0;
+            let fps = app.fps();
+            let label_w = 104.0;
             ui.allocate_ui_with_layout(
                 vec2(label_w, 20.0),
                 Layout::right_to_left(Align::Center),
                 |ui| {
                     ui.label(
-                        egui::RichText::new(format_time(pos))
-                            .size(11.5)
+                        egui::RichText::new(format_timecode(pos, fps))
+                            .size(12.0)
                             .monospace()
                             .color(if app.has_video() {
                                 p.on_surface
@@ -663,8 +664,8 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
                 Layout::left_to_right(Align::Center),
                 |ui| {
                     ui.label(
-                        egui::RichText::new(format_time(dur))
-                            .size(11.5)
+                        egui::RichText::new(format_timecode(dur, fps))
+                            .size(12.0)
                             .monospace()
                             .color(p.on_surface_variant),
                     );
@@ -734,6 +735,12 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
                 if !summary.is_empty() {
                     parts.push(format!("B {summary}"));
                 }
+            }
+            if app.has_video() {
+                let fps = app.fps();
+                let cur = frame_at(app.time_pos(), fps);
+                let all = frame_at(app.duration(), fps);
+                parts.push(format!("帧 {cur} / {all}"));
             }
             if !parts.is_empty() {
                 ui.add_space(10.0);

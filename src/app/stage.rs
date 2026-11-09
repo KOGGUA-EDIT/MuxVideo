@@ -397,6 +397,16 @@ impl Media {
 
     // ── events / sync ─────────────────────────────────────────────────────
 
+    /// Seeks every plane, so a scrub keeps A and B locked together.
+    pub fn seek_all(&self, secs: f64) {
+        for player in [self.player_a.as_ref(), self.player_b.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            player.seek_absolute(secs);
+        }
+    }
+
     pub(crate) fn pump(&mut self) -> Vec<(char, MpvEvent)> {
         let mut events = Vec::new();
         if let Some(p) = &self.player_a {

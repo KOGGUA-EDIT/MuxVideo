@@ -87,7 +87,7 @@ pub(super) fn playlist(ui: &mut Ui, app: &mut MuxApp) {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    ui.spacing_mut().item_spacing.y = 4.0;
+                    ui.spacing_mut().item_spacing.y = 6.0;
                     let mut action: Option<(usize, Target)> = None;
                     let mut remove: Option<usize> = None;
                     for index in 0..app.playlist.len() {
@@ -138,7 +138,7 @@ fn playlist_row(
 ) -> egui::Response {
     let p = app.palette.clone();
     let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(vec2(width, 58.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 62.0), Sense::click());
     let hover = ui
         .ctx()
         .animate_bool_with_time(response.id, response.hovered(), 0.1);
@@ -151,7 +151,7 @@ fn playlist_row(
         p.surface_container_low
     };
     ui.painter()
-        .rect_filled(rect.shrink2(vec2(2.0, 1.0)), CornerRadius::same(12), fill);
+        .rect_filled(rect.shrink2(vec2(2.0, 1.0)), CornerRadius::same(16), fill);
 
     let inner = rect.shrink2(vec2(10.0, 6.0));
     let name_color = if selected {
@@ -429,12 +429,16 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                     .show(ui, |ui| {
                         for (keys, what) in [
                             ("空格", "播放 / 暂停"),
+                            ("画面左键拖动", "逐帧擦洗，左退右进"),
+                            ("画面中键拖动", "平移画面"),
+                            ("滚轮 / Ctrl+滚轮", "音量 / 缩放"),
+                            ("画面双击", "全屏"),
                             ("← →", "后退 / 前进 5 秒"),
                             ("J L", "后退 / 前进 10 秒"),
                             (", .", "上一帧 / 下一帧"),
                             ("↑ ↓", "音量增减"),
                             ("M", "静音"),
-                            ("1 2 3 4", "单画面 / 并排 / 划像 / 差值"),
+                            ("1 2 3 4", "单画面 / 并排 / 划像 / 闪烁"),
                             ("[ ]", "划像分界移动"),
                             ("Tab", "显示 / 隐藏播放列表"),
                             ("F / Esc", "全屏 / 退出全屏"),

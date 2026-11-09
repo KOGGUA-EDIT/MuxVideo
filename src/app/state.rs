@@ -249,6 +249,38 @@ pub fn format_time(secs: f64) -> String {
     }
 }
 
+/// Frame rate to use for timecode maths; falls back to 30 when unknown.
+pub fn safe_fps(fps: f64) -> f64 {
+    if fps.is_finite() && fps > 0.5 && fps < 1000.0 {
+        fps
+    } else {
+        30.0
+    }
+}
+
+/// Frame index containing `secs`.
+pub fn frame_at(secs: f64, fps: f64) -> u64 {
+    let fps = safe_fps(fps);
+    (secs.max(0.0) * fps).round() as u64
+}
+
+/// `125.4 @ 24fps` → `00:02:05:09` — the timecode editors expect.
+pub fn format_timecode(secs: f64, fps: f64) -> String {
+    let fps = safe_fps(fps);
+    let total = if secs.is_finite() && secs > 0.0 {
+        secs
+    } else {
+        0.0
+    };
+    let whole = total.floor();
+    let h = (whole / 3600.0) as u64;
+    let m = ((whole % 3600.0) / 60.0) as u64;
+    let s = (whole % 60.0) as u64;
+    let per_sec = fps.round().max(1.0) as u64;
+    let f = (((total - whole) * fps).round() as u64).min(per_sec.saturating_sub(1));
+    format!("{h:02}:{m:02}:{s:02}:{f:02}")
+}
+
 /// Human readable file size for the playlist rows.
 pub fn format_size(bytes: u64) -> String {
     const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
