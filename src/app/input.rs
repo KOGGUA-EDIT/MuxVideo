@@ -67,6 +67,7 @@ pub(super) fn pump(app: &mut MuxApp, ctx: &egui::Context) {
             // The stage container and the toplevel get the bubbled-up copies.
             continue;
         };
+        debug_log(&event);
         match event.event {
             MouseEvent::Down { x, y, button } => press(app, plane, x, y, button),
             MouseEvent::Move { x, y } => drag_to(app, ctx, x, y),
@@ -102,6 +103,39 @@ fn press(app: &mut MuxApp, plane: Plane, x: i32, y: i32, button: u8) {
         moved: false,
         began: Instant::now(),
     });
+}
+
+/// Debug tap: enabled only when an `input-debug.flag` file sits next to the exe.
+fn debug_enabled() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?.to_path_buf();
+    dir.join("input-debug.flag").exists().then_some(dir)
+}
+
+fn debug_note(line: &str) {
+    use std::io::Write;
+    let Some(dir) = debug_enabled() else {
+        return;
+    };
+    if let Ok(mut f) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(dir.join("input-debug.log"))
+    {
+        let _ = writeln!(f, "{line}");
+    }
+}
+
+fn debug_log(event: &crate::video::InputEvent) {
+    let line = match event.event {
+        MouseEvent::Down { x, y, button } => format!("down {x} {y} b{button}"),
+        MouseEvent::Move { x, y } => format!("move {x} {y}"),
+        MouseEvent::Up { x, y, button } => format!("up {x} {y} b{button}"),
+        MouseEvent::DoubleClick => "double".to_string(),
+        MouseEvent::Wheel { delta } => format!("wheel {delta}"),
+        MouseEvent::Leave => "leave".to_string(),
+    };
+    debug_note(&line);
 }
 
 fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
@@ -149,6 +183,9 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
             } else {
                 target = target.max(0.0);
             }
+            debug_note(&format!(
+                "scrub tx={tx} ppf={ppf:.2} fps={fps:.3} frame0={frame0:.3} target={target:.3} dur={duration:.3}"
+            ));
             if (target - last_target).abs() >= 0.25 / fps {
                 app.scrub = Some(target);
                 app.media.seek_all(target);

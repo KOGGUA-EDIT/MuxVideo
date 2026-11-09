@@ -155,6 +155,9 @@ pub struct Settings {
     pub last_dir: String,
     /// Last files, restored as a playlist.
     pub recent: Vec<String>,
+    /// Schema version, used to migrate older settings files once.
+    #[serde(default)]
+    pub cfg_version: u32,
 }
 
 impl Default for Settings {
@@ -175,6 +178,7 @@ impl Default for Settings {
             fill: false,
             last_dir: String::new(),
             recent: Vec::new(),
+            cfg_version: CONFIG_VERSION,
         }
     }
 }
@@ -193,7 +197,16 @@ impl Settings {
         let Ok(text) = std::fs::read_to_string(&path) else {
             return Self::default();
         };
-        serde_json::from_str(&text).unwrap_or_default()
+        let mut s: Self = serde_json::from_str(&text).unwrap_or_default();
+        if s.cfg_version < CONFIG_VERSION {
+            // v2: the scrub sensitivity default was wrong (20 px per frame made
+            // dragging look broken on long clips); every older file gets the
+            // responsive 1 px = 1 frame back.
+            s.scrub_ppf = SCRUB_PPF_DEFAULT;
+            s.cfg_version = CONFIG_VERSION;
+            s.save();
+        }
+        s
     }
 
     pub fn save(&self) {
@@ -349,6 +362,9 @@ pub const VIDEO_EXTS: &[&str] = &[
 
 /// Default drag sensitivity: one frame every 20 px of horizontal travel.
 pub const SCRUB_PPF_DEFAULT: f64 = 1.0;
+
+/// Bump when an older settings file needs a one-time fix-up in `Settings::load`.
+pub const CONFIG_VERSION: u32 = 2;
 /// Hard bounds for the scrub sensitivity, matching the settings slider.
 pub const SCRUB_PPF_RANGE: std::ops::RangeInclusive<f64> = 1.0..=100.0;
 
