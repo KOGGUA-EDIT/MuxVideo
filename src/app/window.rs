@@ -9,11 +9,19 @@
 const DWMWA_WINDOW_CORNER_PREFERENCE: u32 = 33;
 /// `DWMWCP_ROUND`.
 const DWMWCP_ROUND: i32 = 2;
+/// `DWMWCP_DONOTROUND`.
+const DWMWCP_DONOTROUND: i32 = 1;
 /// `DWMWA_BORDER_COLOR`.
 const DWMWA_BORDER_COLOR: u32 = 34;
+/// `DWMWA_COLOR_NONE`: tell DWM not to draw the border at all.
+const DWMWA_COLOR_NONE: u32 = 0xFFFF_FFFE;
 
 /// Rounds the corners of `hwnd` and gives it a hairline border.
-pub fn apply_modern_frame(hwnd: i64) {
+///
+/// In immersive playback the picture has to reach the very edge of the screen:
+/// the 1px DWM border and the rounded corners would show up as a light groove
+/// along the bottom edge, so they are switched off instead.
+pub fn apply_modern_frame(hwnd: i64, immersive: bool) {
     use windows_sys::Win32::Foundation::HWND;
     use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
 
@@ -21,7 +29,11 @@ pub fn apply_modern_frame(hwnd: i64) {
         return;
     }
     let hwnd = hwnd as HWND;
-    let preference: i32 = DWMWCP_ROUND;
+    let preference: i32 = if immersive {
+        DWMWCP_DONOTROUND
+    } else {
+        DWMWCP_ROUND
+    };
     // SAFETY: the HWND comes from our own window; the attribute and the
     // pointed-to value match what dwmapi expects for corner preference.
     unsafe {
@@ -33,8 +45,12 @@ pub fn apply_modern_frame(hwnd: i64) {
         );
     }
 
-    // A dark, very transparent border keeps the corner rounding crisp.
-    let border: u32 = 0x0022_1F26; // COLORREF is 0x00BBGGRR
+    // Dark hairline normally; no border at all while immersive.
+    let border: u32 = if immersive {
+        DWMWA_COLOR_NONE
+    } else {
+        0x0022_1F26 // COLORREF is 0x00BBGGRR
+    };
     // SAFETY: as above; DWMWA_BORDER_COLOR takes a COLORREF.
     unsafe {
         let _ = DwmSetWindowAttribute(

@@ -90,6 +90,8 @@ pub struct MuxApp {
     pending: Vec<(PathBuf, Target)>,
     /// Whether the DWM frame attributes were already applied.
     frame_dressed: bool,
+    /// Which `apply_modern_frame` flavour the window currently uses.
+    frame_immersive: bool,
     /// Start of the flicker clock (CompareMode::Blink).
     blink_clock: Instant,
     /// Immersive playback: chrome hidden, picture owns the window.
@@ -152,6 +154,7 @@ impl MuxApp {
             view_key: None,
             pending: Vec::new(),
             frame_dressed: false,
+            frame_immersive: false,
             blink_clock: Instant::now(),
             immersive: false,
         };
@@ -850,12 +853,21 @@ impl eframe::App for MuxApp {
             self.open_path(path, target);
         }
 
-        // Native window polish: rounded DWM corners, done once the HWND exists.
+        // Native window polish: rounded DWM corners normally, no border at all
+        // while immersive (otherwise a light 1px groove shows along the edge).
+        let immersive_now = self.immersive;
         if !self.frame_dressed
             && let Some(hwnd) = crate::video::childwin::find_window_by_title(stage::WINDOW_TITLE)
         {
-            window::apply_modern_frame(hwnd);
+            window::apply_modern_frame(hwnd, immersive_now);
             self.frame_dressed = true;
+            self.frame_immersive = immersive_now;
+        } else if self.frame_dressed
+            && self.frame_immersive != immersive_now
+            && let Some(hwnd) = crate::video::childwin::find_window_by_title(stage::WINDOW_TITLE)
+        {
+            window::apply_modern_frame(hwnd, immersive_now);
+            self.frame_immersive = immersive_now;
         }
 
         // Files dropped onto the window.
