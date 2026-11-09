@@ -741,26 +741,42 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
             .max_rect(row2)
             .layout(Layout::left_to_right(Align::Center)),
         |ui| {
-            if icon_button(ui, &p, 34.0, false, icons::step_back)
-                .on_hover_text("上一帧（,）")
-                .clicked()
-            {
-                app.step_frame(false);
-            }
+            // The three transport buttons share one 48 px baseline, so the
+            // small step buttons cannot drift off the play button's centre.
+            const CLUSTER_H: f32 = 48.0;
+            let tall = |ui: &mut Ui, w: f32, add: &mut dyn FnMut(&mut Ui)| {
+                ui.allocate_ui_with_layout(
+                    vec2(w, CLUSTER_H),
+                    Layout::centered_and_justified(egui::Direction::LeftToRight),
+                    |ui| add(ui),
+                );
+            };
+            tall(ui, 34.0, &mut |ui| {
+                if icon_button(ui, &p, 34.0, false, icons::step_back)
+                    .on_hover_text("上一帧（,）")
+                    .clicked()
+                {
+                    app.step_frame(false);
+                }
+            });
             ui.add_space(6.0);
-            if play_button(ui, app)
-                .on_hover_text("播放 / 暂停（空格）")
-                .clicked()
-            {
-                app.toggle_play();
-            }
+            tall(ui, 48.0, &mut |ui| {
+                if play_button(ui, app)
+                    .on_hover_text("播放 / 暂停（空格）")
+                    .clicked()
+                {
+                    app.toggle_play();
+                }
+            });
             ui.add_space(6.0);
-            if icon_button(ui, &p, 34.0, false, icons::step_forward)
-                .on_hover_text("下一帧（.）")
-                .clicked()
-            {
-                app.step_frame(true);
-            }
+            tall(ui, 34.0, &mut |ui| {
+                if icon_button(ui, &p, 34.0, false, icons::step_forward)
+                    .on_hover_text("下一帧（.）")
+                    .clicked()
+                {
+                    app.step_frame(true);
+                }
+            });
             ui.add_space(10.0);
             let info = if app.has_video() {
                 format!(
