@@ -348,7 +348,7 @@ pub const VIDEO_EXTS: &[&str] = &[
 ];
 
 /// Default drag sensitivity: one frame every 20 px of horizontal travel.
-pub const SCRUB_PPF_DEFAULT: f64 = 20.0;
+pub const SCRUB_PPF_DEFAULT: f64 = 1.0;
 /// Hard bounds for the scrub sensitivity, matching the settings slider.
 pub const SCRUB_PPF_RANGE: std::ops::RangeInclusive<f64> = 1.0..=100.0;
 

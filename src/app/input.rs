@@ -105,6 +105,7 @@ fn press(app: &mut MuxApp, plane: Plane, x: i32, y: i32, button: u8) {
 }
 
 fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
+    let _ = ctx;
     let fps = app.fps();
     let duration = app.duration();
     // Park playback before borrowing the gesture: a plain click never reaches
@@ -132,9 +133,8 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
     }
     match drag.mode {
         Mode::Scrub => {
-            // Dragging across the whole preview covers the whole clip, so a
-            // short drag always shows something. Holding Shift switches to
-            // frame-by-frame precision (px per frame from the settings page).
+            // One pixel of travel per frame (user tunable on the settings
+            // page), so the picture follows the pointer frame by frame.
             let plane = drag.plane;
             let frame0 = drag.frame0;
             let last_target = drag.last_target;
@@ -142,18 +142,7 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
                 *super::state::SCRUB_PPF_RANGE.start(),
                 *super::state::SCRUB_PPF_RANGE.end(),
             );
-            let frames = if ctx.input(|i| i.modifiers.shift) {
-                f64::from(tx) / ppf.max(0.01)
-            } else if let (Some((w, _)), true) = (app.media.plane_size(plane), duration > 0.0) {
-                let total_frames = duration * fps;
-                if w > 1 && total_frames > 0.0 {
-                    f64::from(tx) * total_frames / f64::from(w)
-                } else {
-                    f64::from(tx) / ppf.max(0.01)
-                }
-            } else {
-                f64::from(tx) / ppf.max(0.01)
-            };
+            let frames = f64::from(tx) / ppf.max(0.01);
             let mut target = frame0 + frames / fps;
             if duration > 0.0 {
                 target = target.clamp(0.0, duration);
@@ -173,6 +162,7 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
                     drag.last_target = target;
                 }
             }
+            let _ = plane;
         }
         Mode::Wipe => {
             if let Some((w, _)) = app.media.plane_size(drag.plane) {
