@@ -507,15 +507,6 @@ impl Media {
     }
 
     /// Applies a RV-style pan/zoom to every live plane, so A/B stay aligned.
-    pub fn apply_pan_zoom(&self, pan: (f64, f64), zoom: f64) {
-        for plane in [Plane::A, Plane::B] {
-            if let Some(player) = self.player_of(plane) {
-                player.set_pan(pan.0, pan.1);
-                player.set_zoom(zoom);
-            }
-        }
-    }
-
     /// Reads resolution / frame rate / codec once a file finished loading.
     pub fn refresh_meta(&mut self, plane: Plane) {
         let Some(player) = self.player_of(plane) else {

@@ -37,8 +37,8 @@ const WAVE_AMPLITUDE: f32 = 4.5;
 const WAVE_LENGTH: f32 = 46.0;
 /// Scroll speed of the wave, in pixels per second.
 const PHASE_SPEED: f32 = 30.0;
-/// Seconds the wave takes to grow from flat to full amplitude (and back).
-const WAVE_ANIMATION: f32 = 0.8;
+/// Seconds the wave takes to morph from flat to wavy (and back).
+const WAVE_ANIMATION: f32 = 0.30;
 /// Horizontal distance over which the wave ramps in from the flat start.
 const WAVE_RAMP_IN: f32 = 12.0;
 /// Horizontal distance over which the wave tapers out before the handle.
@@ -155,16 +155,14 @@ fn wavy_slider_impl(
     // ---- animation -------------------------------------------------------
     let anim_id = response.id;
     let ctx = ui.ctx();
-    let amplitude_target = if enabled && animated && !dragging && t > EPSILON {
-        WAVE_AMPLITUDE
-    } else {
-        0.0
-    };
-    let amplitude = ctx.animate_value_with_time(
-        anim_id.with("wave-amplitude"),
-        amplitude_target,
+    // Ease the flat <-> wavy transition instead of snapping: a 0.3 s
+    // smoothstep looks like the M3 Expressive morph.
+    let wave_t = ctx.animate_bool_with_time(
+        anim_id.with("wave-playing"),
+        enabled && animated && !dragging && t > EPSILON,
         WAVE_ANIMATION,
     );
+    let amplitude = WAVE_AMPLITUDE * smoothstep01(wave_t);
     let hover_t = ctx.animate_bool_with_time(
         anim_id.with("hover"),
         enabled && (response.hovered() || response.has_focus()),
@@ -176,15 +174,14 @@ fn wavy_slider_impl(
         enabled && (response.hovered() || response.has_focus() || dragging),
         0.15,
     );
+    // Keep repainting while the wave scrolls or while it is morphing in/out.
+    let morphing = wave_t > EPSILON && wave_t < 1.0 - EPSILON;
     if enabled
-        && animated
         && !dragging
         && t > EPSILON
-        && amplitude > EPSILON
         && ui.is_rect_visible(rect)
+        && (morphing || (animated && amplitude > EPSILON))
     {
-        // The wave itself scrolls, so keep repainting at display rate -- but
-        // only while the widget is on screen and actually animating.
         ctx.request_repaint_after(Duration::from_millis(16));
     }
 

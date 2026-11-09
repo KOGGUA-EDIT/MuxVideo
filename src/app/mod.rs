@@ -73,6 +73,8 @@ pub struct MuxApp {
     /// Picture pan/zoom (RV style), applied to every plane.
     pub(super) pan: (f64, f64),
     pub(super) zoom: f64,
+    /// Signature of the last applied view so pan/zoom/fit only re-sends on change.
+    view_key: Option<(bool, i32, i32, u64, u64, u64, u8)>,
     /// Files to open on the first frame, when the native window already exists.
     pending: Vec<(PathBuf, Target)>,
     /// Whether the DWM frame attributes were already applied.
@@ -128,6 +130,7 @@ impl MuxApp {
             suppress_click: None,
             pan: (0.0, 0.0),
             zoom: 0.0,
+            view_key: None,
             pending: Vec::new(),
             frame_dressed: false,
             blink_clock: Instant::now(),
@@ -185,6 +188,11 @@ impl MuxApp {
             .or(self.media.meta_b.as_ref())
             .map(|m| m.fps)
             .unwrap_or(30.0)
+    }
+
+    /// Forces the next `sync_fit` to re-apply pan/zoom/fill.
+    pub(super) fn view_dirty(&mut self) {
+        self.view_key = None;
     }
 
     pub(super) fn time_pos(&self) -> f64 {
@@ -531,6 +539,12 @@ impl MuxApp {
         if pressed(Key::Num4) {
             self.set_mode(CompareMode::Blink);
         }
+        if pressed(Key::Num0) {
+            crate::app::input::reset_view(self);
+        }
+        if pressed(Key::S) {
+            crate::app::input::snapshot(self);
+        }
         if pressed(Key::Tab) {
             self.settings.show_playlist = !self.settings.show_playlist;
             self.settings_dirty = true;
@@ -600,6 +614,57 @@ impl MuxApp {
         );
         self.media.sync_playback(self.settings.mode);
         self.stage_reported = false;
+        self.sync_fit(ppp);
+    }
+
+    /// Fits each plane's picture to its surface: either letterboxed
+    /// (`video-zoom` 0) or cropped to fill when the user picked 填充.
+    fn sync_fit(&mut self, ppp: f32) {
+        let _ = ppp;
+        let mode_tag = match self.settings.mode {
+            CompareMode::Single => 0u8,
+            CompareMode::Pair => 1,
+            CompareMode::Wipe => 2,
+            CompareMode::Blink => 3,
+        };
+        let key = (
+            self.settings.fill,
+            self.stage_rect.width().round() as i32,
+            self.stage_rect.height().round() as i32,
+            self.zoom.to_bits(),
+            self.pan.0.to_bits(),
+            self.pan.1.to_bits(),
+            mode_tag,
+        );
+        if self.view_key == Some(key) {
+            return;
+        }
+        self.view_key = Some(key);
+        for (plane, meta) in [
+            (stage::Plane::A, self.media.meta_a.clone()),
+            (stage::Plane::B, self.media.meta_b.clone()),
+        ] {
+            let Some(meta) = meta else { continue };
+            let Some((pw, ph)) = self.media.plane_size(plane) else {
+                continue;
+            };
+            if meta.width == 0 || meta.height == 0 || pw <= 0 || ph <= 0 {
+                continue;
+            }
+            let (sw, sh) = (f64::from(pw), f64::from(ph));
+            let (vw, vh) = (f64::from(meta.width), f64::from(meta.height));
+            let fit = (sw / vw).min(sh / vh);
+            let cover = (sw / vw).max(sh / vh);
+            let base = if self.settings.fill && fit > 0.0 {
+                (cover / fit).log2()
+            } else {
+                0.0
+            };
+            if let Some(player) = self.media.player_of(plane) {
+                player.set_pan(self.pan.0, self.pan.1);
+                player.set_zoom(base + self.zoom);
+            }
+        }
     }
 
     /// Which input the flicker comparison shows right now.

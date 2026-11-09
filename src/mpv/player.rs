@@ -538,6 +538,14 @@ impl MpvPlayer {
         let _ = self.command(&["stop"]);
     }
 
+    /// Saves the current video frame as a PNG / JPG at `path`.
+    ///
+    /// Uses mpv's `screenshot-to-file` with the `video` flag so subtitles and
+    /// OSD never end up in the file.
+    pub fn screenshot_to_file(&self, path: &str) -> bool {
+        self.command(&["screenshot-to-file", path, "video"])
+    }
+
     fn command(&self, args: &[&str]) -> bool {
         let api = self.lib.api();
         let mut owned = Vec::with_capacity(args.len());

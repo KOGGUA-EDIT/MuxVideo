@@ -149,6 +149,8 @@ pub struct Settings {
     pub hwdec: String,
     /// Horizontal pixels per frame when scrubbing on the picture (1 … 100).
     pub scrub_ppf: f64,
+    /// Crop the picture to fill the stage instead of letterboxing it.
+    pub fill: bool,
     /// Recently opened directory for the file picker.
     pub last_dir: String,
     /// Last files, restored as a playlist.
@@ -170,6 +172,7 @@ impl Default for Settings {
             show_playlist: true,
             hwdec: "auto-safe".into(),
             scrub_ppf: SCRUB_PPF_DEFAULT,
+            fill: false,
             last_dir: String::new(),
             recent: Vec::new(),
         }
@@ -348,6 +351,41 @@ pub const VIDEO_EXTS: &[&str] = &[
 pub const SCRUB_PPF_DEFAULT: f64 = 20.0;
 /// Hard bounds for the scrub sensitivity, matching the settings slider.
 pub const SCRUB_PPF_RANGE: std::ops::RangeInclusive<f64> = 1.0..=100.0;
+
+/// `%USERPROFILE%\Pictures`, falling back to the executable directory.
+pub fn pictures_dir() -> std::path::PathBuf {
+    if let Ok(profile) = std::env::var("USERPROFILE") {
+        let dir = std::path::Path::new(&profile).join("Pictures");
+        if dir.is_dir() {
+            return dir;
+        }
+    }
+    std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(std::path::Path::to_path_buf))
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
+/// Local wall clock as `(year, month, day, hour, minute, second)`.
+///
+/// Uses `GetLocalTime` so screenshot names match the user's clock instead of
+/// drifting by the UTC offset.
+pub fn local_now() -> (u16, u16, u16, u16, u16, u16) {
+    // SAFETY: `GetLocalTime` only writes into the supplied struct.
+    unsafe {
+        let mut st: windows_sys::Win32::Foundation::SYSTEMTIME = std::mem::zeroed();
+        windows_sys::Win32::System::SystemInformation::GetLocalTime(&mut st);
+        (
+            st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond,
+        )
+    }
+}
+
+/// `2026-11-10 02-52-31` style stamp for file names.
+pub fn file_stamp() -> String {
+    let (y, mo, d, h, mi, s) = local_now();
+    format!("{y:04}{mo:02}{d:02}-{h:02}{mi:02}{s:02}")
+}
 
 pub fn is_video_path(path: &Path) -> bool {
     path.extension()

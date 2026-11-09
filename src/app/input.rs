@@ -90,10 +90,8 @@ fn press(app: &mut MuxApp, plane: Plane, x: i32, y: i32, button: u8) {
         _ => return,
     };
     let frame0 = app.time_pos();
-    if mode == Mode::Scrub {
-        // Park the picture so each frame is visible while dragging.
-        app.set_paused(true);
-    }
+    // Do not touch playback here: a plain click must keep its play/pause
+    // meaning, so the picture is only parked once a real scrub starts.
     app.gesture = Some(Drag {
         plane,
         mode,
@@ -109,6 +107,17 @@ fn press(app: &mut MuxApp, plane: Plane, x: i32, y: i32, button: u8) {
 fn drag_to(app: &mut MuxApp, _ctx: &egui::Context, x: i32, y: i32) {
     let fps = app.fps();
     let duration = app.duration();
+    // Park playback before borrowing the gesture: a plain click never reaches
+    // this point, so play/pause keeps its meaning.
+    if app.gesture.as_ref().is_some_and(|d| d.mode == Mode::Scrub)
+        && app.is_playing()
+        && app
+            .gesture
+            .as_ref()
+            .is_some_and(|d| (x - d.start.0).abs() > DRAG_SLOP || (y - d.start.1).abs() > DRAG_SLOP)
+    {
+        app.set_paused(true);
+    }
     let Some(drag) = app.gesture.as_mut() else {
         return;
     };
@@ -165,7 +174,7 @@ fn drag_to(app: &mut MuxApp, _ctx: &egui::Context, x: i32, y: i32) {
                     (app.pan.0 + sx).clamp(-2.0, 2.0),
                     (app.pan.1 + sy).clamp(-2.0, 2.0),
                 );
-                app.media.apply_pan_zoom(app.pan, app.zoom);
+                app.view_dirty();
             }
         }
     }
@@ -197,7 +206,7 @@ fn wheel(app: &mut MuxApp, ctx: &egui::Context, delta: i32) {
     let ctrl = ctx.input(|i| i.modifiers.ctrl);
     if ctrl {
         app.zoom = (app.zoom + notches * ZOOM_STEP).clamp(ZOOM_MIN, ZOOM_MAX);
-        app.media.apply_pan_zoom(app.pan, app.zoom);
+        app.view_dirty();
         app.toast = Some(Toast::info(format!("缩放 {:+.0}%", app.zoom * 100.0)));
         return;
     }
@@ -217,10 +226,28 @@ fn toggle_fullscreen(app: &mut MuxApp, ctx: &egui::Context) {
     ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
 }
 
-/// Used by the settings panel to reset pan/zoom.
-#[allow(dead_code)] // kit primitive
+/// Resets pan/zoom; also reachable from the 0 key.
 pub(crate) fn reset_view(app: &mut MuxApp) {
     app.pan = (0.0, 0.0);
     app.zoom = 0.0;
-    app.media.apply_pan_zoom(app.pan, app.zoom);
+    app.view_dirty();
+}
+
+/// Saves the current frame into the user's Pictures folder.
+pub(crate) fn snapshot(app: &mut MuxApp) {
+    use super::state::{Toast, file_stamp, frame_at, pictures_dir};
+    let Some(player) = app.active_player() else {
+        app.toast = Some(Toast::error("没有可截图的画面"));
+        return;
+    };
+    let frame = frame_at(app.time_pos(), app.fps());
+    let dir = pictures_dir();
+    let name = format!("MuxVideo_{}_帧{frame:05}.png", file_stamp());
+    let path = dir.join(&name);
+    let path_str = path.to_string_lossy().to_string();
+    if player.screenshot_to_file(&path_str) {
+        app.toast = Some(Toast::info(format!("已保存 {name}")));
+    } else {
+        app.toast = Some(Toast::error("截图失败"));
+    }
 }

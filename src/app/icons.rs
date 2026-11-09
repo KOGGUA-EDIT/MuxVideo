@@ -316,3 +316,23 @@ pub fn keyboard(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response 
         ]
     })
 }
+pub fn fullscreen(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response {
+    icon(ui, size, color, |i| {
+        vec![
+            i.polygon(&[(4.0, 9.0), (4.0, 4.0), (9.0, 4.0)], false),
+            i.polygon(&[(15.0, 4.0), (20.0, 4.0), (20.0, 9.0)], false),
+            i.polygon(&[(20.0, 15.0), (20.0, 20.0), (15.0, 20.0)], false),
+            i.polygon(&[(9.0, 20.0), (4.0, 20.0), (4.0, 15.0)], false),
+        ]
+    })
+}
+
+pub fn camera(ui: &mut egui::Ui, size: f32, color: Color32) -> egui::Response {
+    icon(ui, size, color, |i| {
+        vec![
+            i.round_rect(3.0, 7.0, 18.0, 12.5, 3.0, false),
+            i.round_rect(9.0, 4.5, 6.0, 3.0, 1.2, false),
+            i.circle(12.0, 13.2, 3.6, false),
+        ]
+    })
+}

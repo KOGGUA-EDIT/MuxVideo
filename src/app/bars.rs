@@ -222,6 +222,14 @@ pub(super) fn titlebar(ui: &mut Ui, app: &mut MuxApp) {
                 ui.painter()
                     .rect_filled(sep_rect, CornerRadius::same(1), p.outline_variant);
                 ui.add_space(4.0);
+                let full = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
+                if icon_button(ui, &p, 38.0, full, icons::fullscreen)
+                    .on_hover_text("全屏（F）")
+                    .clicked()
+                {
+                    ui.ctx()
+                        .send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
+                }
                 let settings_active = app.rail == RailTab::Settings;
                 if icon_button(ui, &p, 38.0, settings_active, icons::settings).clicked() {
                     app.rail = if settings_active {
@@ -420,6 +428,25 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                if icon_button(ui, &p, 34.0, false, icons::camera)
+                    .on_hover_text("截图：把当前帧存到「图片」文件夹（S）")
+                    .clicked()
+                {
+                    super::input::snapshot(app);
+                }
+                // 适应 / 填充: letterbox vs crop-to-fill the stage.
+                {
+                    let fill = app.settings.fill;
+                    if controls::chip(ui, &p, if fill { "填充" } else { "适应" }, fill)
+                        .on_hover_text("适应＝完整显示（可能有黑边）；填充＝铺满画面（裁掉溢出）")
+                        .clicked()
+                    {
+                        app.settings.fill = !fill;
+                        app.settings_dirty = true;
+                        app.view_dirty();
+                    }
+                    ui.add_space(6.0);
+                }
                 if app.media.file_a.is_some() && app.media.file_b.is_some() {
                     if icon_button(ui, &p, 34.0, false, icons::swap)
                         .on_hover_text("交换 A / B")
