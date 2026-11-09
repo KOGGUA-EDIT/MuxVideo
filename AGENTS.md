@@ -48,3 +48,8 @@ cargo build --offline
 - 版本号在 `Cargo.toml`，改动可见时 +0.0.1。
 - 公共签名（`Palette`、`MpvPlayer`、`ChildWindow` 等）改动需先同步其它模块负责人。
 - 每次交付前 `cargo build --offline` 与 `cargo clippy --offline --all-targets -- -D warnings` 至少不新增警告。
+
+## 交付
+
+- \dist\\\ = 可运行最小集：\muxvideo.exe\ + \libmpv-2.dll\ + \README.txt\（不进 git，见 .gitignore）。
+- 重新发布：\cargo build --offline --release\ 后把 \	arget\\release\\muxvideo.exe\ 和 \	ools\\mpv\\libmpv-2.dll\ 拷到 \dist\\\。
