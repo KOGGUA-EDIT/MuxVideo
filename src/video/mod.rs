@@ -2,4 +2,4 @@
 
 pub mod childwin;
 
-pub use childwin::{InputEvent, MouseEvent, take_input_events};
+pub use childwin::{InputEvent, MouseEvent, child_windows, take_input_events};

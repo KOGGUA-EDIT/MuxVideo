@@ -7,7 +7,7 @@ use eframe::egui::{
 
 use super::controls::{self};
 use super::icons;
-use super::state::{RailTab, Settings, format_size, parse_hex};
+use super::state::{CompareMode, Lang, RailTab, Settings, format_size, parse_hex};
 use super::{MuxApp, Target};
 
 /// Preset Material You seed colours shown in settings.
@@ -28,14 +28,14 @@ pub(super) fn playlist(ui: &mut Ui, app: &mut MuxApp) {
     ui.painter().text(
         pos2(head.min.x + 10.0, head.center().y),
         egui::Align2::LEFT_CENTER,
-        "播放列表",
+        app.t("播放列表", "Playlist"),
         FontId::proportional(14.0),
         p.on_surface,
     );
     ui.painter().text(
         pos2(head.min.x + 96.0, head.center().y + 1.0),
         egui::Align2::LEFT_CENTER,
-        format!("{} 项", app.playlist.len()),
+        format!("{} {}", app.playlist.len(), app.t("项", "items")),
         FontId::proportional(11.0),
         p.on_surface_variant,
     );
@@ -53,7 +53,7 @@ pub(super) fn playlist(ui: &mut Ui, app: &mut MuxApp) {
             .layout(Layout::centered_and_justified(egui::Direction::LeftToRight)),
     );
     icons::folder_open(&mut child, 18.0, p.on_surface_variant);
-    if add.on_hover_text("添加视频").clicked() {
+    if add.on_hover_text(app.t("添加视频", "Add videos")).clicked() {
         app.pick_files(ui.ctx(), Target::Auto);
     }
 
@@ -72,15 +72,17 @@ pub(super) fn playlist(ui: &mut Ui, app: &mut MuxApp) {
                 ui.add_space(24.0);
                 ui.vertical_centered(|ui| {
                     ui.label(
-                        egui::RichText::new("还没有视频")
+                        egui::RichText::new(app.t("还没有视频", "No videos yet"))
                             .size(13.0)
                             .color(p.on_surface_variant),
                     );
                     ui.add_space(4.0);
                     ui.label(
-                        egui::RichText::new("拖入文件或点右上角 +")
-                            .size(11.0)
-                            .color(p.outline),
+                        egui::RichText::new(
+                            app.t("拖入文件或点右上角 +", "Drop files in, or hit + above"),
+                        )
+                        .size(11.0)
+                        .color(p.outline),
                     );
                 });
                 return;
@@ -122,7 +124,10 @@ pub(super) fn playlist(ui: &mut Ui, app: &mut MuxApp) {
     ui.painter().text(
         pos2(head.min.x + 10.0, ui.max_rect().max.y - 16.0),
         egui::Align2::LEFT_CENTER,
-        "双击载入 A 面 · 右键移出列表",
+        app.t(
+            "双击载入 A 面 · 右键移出列表",
+            "Double-click to load into A · right-click to remove",
+        ),
         FontId::proportional(10.5),
         p.outline,
     );
@@ -158,21 +163,27 @@ fn media_info_panel(ui: &mut Ui, app: &MuxApp, rect: Rect) {
     ui.painter().text(
         pos2(inner.min.x, y + 8.0),
         egui::Align2::LEFT_CENTER,
-        "媒体信息",
+        app.t("媒体信息", "Media info"),
         FontId::proportional(13.0),
         p.on_surface,
     );
-    let plane = if app.media.file_a.as_ref() == Some(&entry.path) {
-        Some("A 面")
+    // Which plane holds this file, remembered as an index so the label can be
+    // localised without comparing translated strings.
+    let plane: Option<char> = if app.media.file_a.as_ref() == Some(&entry.path) {
+        Some('A')
     } else if app.media.file_b.as_ref() == Some(&entry.path) {
-        Some("B 面")
+        Some('B')
     } else {
         None
     };
     ui.painter().text(
         pos2(inner.max.x, y + 8.0),
         egui::Align2::RIGHT_CENTER,
-        plane.unwrap_or("未载入"),
+        match plane {
+            Some('A') => app.t("A 面", "A side"),
+            Some(_) => app.t("B 面", "B side"),
+            None => app.t("未载入", "Empty"),
+        },
         FontId::proportional(10.5),
         if plane.is_some() {
             p.primary
@@ -183,7 +194,7 @@ fn media_info_panel(ui: &mut Ui, app: &MuxApp, rect: Rect) {
     y += 24.0;
 
     let meta = match plane {
-        Some("A 面") => app.media.meta_a.clone(),
+        Some('A') => app.media.meta_a.clone(),
         Some(_) => app.media.meta_b.clone(),
         None => None,
     };
@@ -191,7 +202,7 @@ fn media_info_panel(ui: &mut Ui, app: &MuxApp, rect: Rect) {
     let mut rows: Vec<(&str, String)> = Vec::new();
     if let Some(m) = meta {
         rows.push((
-            "分辨率",
+            app.t("分辨率", "Resolution"),
             format!(
                 "{}×{}{}",
                 m.width,
@@ -204,7 +215,7 @@ fn media_info_panel(ui: &mut Ui, app: &MuxApp, rect: Rect) {
             ),
         ));
         rows.push((
-            "帧率",
+            app.t("帧率", "Frame rate"),
             if m.fps > 0.0 {
                 format!("{:.3} fps", m.fps)
             } else {
@@ -217,19 +228,20 @@ fn media_info_panel(ui: &mut Ui, app: &MuxApp, rect: Rect) {
             entry.size as f64 * 0.0
         };
         rows.push((
-            "时长",
+            app.t("时长", "Duration"),
             if dur > 0.0 {
                 format!(
-                    "{} · {} 帧",
+                    "{} · {} {}",
                     super::state::format_timecode(dur, m.fps),
-                    super::state::frame_at(dur, m.fps)
+                    super::state::frame_at(dur, m.fps),
+                    app.t("帧", "frames")
                 )
             } else {
                 "—".into()
             },
         ));
         rows.push((
-            "容器",
+            app.t("容器", "Container"),
             if m.container.is_empty() {
                 "—".into()
             } else {
@@ -237,7 +249,7 @@ fn media_info_panel(ui: &mut Ui, app: &MuxApp, rect: Rect) {
             },
         ));
         rows.push((
-            "视频编码",
+            app.t("视频编码", "Video codec"),
             if m.codec.is_empty() {
                 "—".into()
             } else {
@@ -245,7 +257,7 @@ fn media_info_panel(ui: &mut Ui, app: &MuxApp, rect: Rect) {
             },
         ));
         rows.push((
-            "码率",
+            app.t("码率", "Bitrate"),
             if m.bitrate.is_empty() {
                 "—".into()
             } else {
@@ -253,20 +265,30 @@ fn media_info_panel(ui: &mut Ui, app: &MuxApp, rect: Rect) {
             },
         ));
         rows.push((
-            "音频",
+            app.t("音频", "Audio"),
             if m.audio.is_empty() {
-                "无".into()
+                app.t("无", "none").into()
             } else {
                 m.audio.clone()
             },
         ));
         rows.push((
-            "文件大小",
+            app.t("文件大小", "File size"),
             super::state::format_size(if m.size > 0 { m.size } else { entry.size }),
         ));
     } else {
-        rows.push(("文件大小", super::state::format_size(entry.size)));
-        rows.push(("提示", "载入 A / B 面后显示完整信息".into()));
+        rows.push((
+            app.t("文件大小", "File size"),
+            super::state::format_size(entry.size),
+        ));
+        rows.push((
+            app.t("提示", "Hint"),
+            app.t(
+                "载入 A / B 面后显示完整信息",
+                "Load into A or B to see everything",
+            )
+            .into(),
+        ));
     }
 
     for (label, value) in rows {
@@ -389,9 +411,9 @@ fn playlist_row(
             },
         );
         let _ = resp.on_hover_text(if plane == Target::A {
-            "载入 A 面"
+            app.t("载入 A 面", "Load into A")
         } else {
-            "载入 B 面"
+            app.t("载入 B 面", "Load into B")
         });
     }
     response
@@ -430,19 +452,24 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
     ui.add_space(8.0);
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new("设置")
+            egui::RichText::new(app.t("设置", "Settings"))
                 .size(22.0)
                 .strong()
                 .color(p.on_surface),
         );
         ui.add_space(10.0);
         ui.label(
-            egui::RichText::new("以下设置会自动保存到 %APPDATA%\\MuxVideo\\muxvideo.settings.json")
-                .size(11.5)
-                .color(p.on_surface_variant),
+            egui::RichText::new(format!(
+                "{} %APPDATA%\\MuxVideo\\muxvideo.settings.json",
+                app.t("以下设置会自动保存到", "Saved automatically to")
+            ))
+            .size(11.5)
+            .color(p.on_surface_variant),
         );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
-            if controls::pill_button(ui, &p, "返回画面", false, None).clicked() {
+            if controls::pill_button(ui, &p, app.t("返回画面", "Back to player"), false, None)
+                .clicked()
+            {
                 app.rail = RailTab::Viewer;
             }
         });
@@ -455,16 +482,36 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
         .show(ui, |ui| {
             // ── appearance ──
             controls::surface_card(ui, &p, |ui| {
-                section_title(ui, &p, "外观");
+                section_title(ui, &p, app.t("外观", "Appearance"));
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("配色")
+                        egui::RichText::new(app.t("语言", "Language"))
                             .size(12.5)
                             .color(p.on_surface_variant),
                     );
                     ui.add_space(12.0);
-                    for (label, dark) in [("深色", true), ("浅色", false)] {
+                    for (label, lang) in [("中文", Lang::Zh), ("English", Lang::En)] {
+                        let selected = app.settings.lang == lang;
+                        if controls::chip(ui, &p, label, selected).clicked() && !selected {
+                            app.settings.lang = lang;
+                            app.settings_dirty = true;
+                        }
+                        ui.add_space(4.0);
+                    }
+                });
+                ui.add_space(12.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(app.t("配色", "Colour scheme"))
+                            .size(12.5)
+                            .color(p.on_surface_variant),
+                    );
+                    ui.add_space(12.0);
+                    for (label, dark) in [
+                        (app.t("深色", "Dark"), true),
+                        (app.t("浅色", "Light"), false),
+                    ] {
                         let selected = app.settings.dark == dark;
                         if controls::chip(ui, &p, label, selected).clicked() && !selected {
                             app.settings.dark = dark;
@@ -475,7 +522,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                 });
                 ui.add_space(12.0);
                 ui.label(
-                    egui::RichText::new("主题色")
+                    egui::RichText::new(app.t("主题色", "Seed colour"))
                         .size(12.5)
                         .color(p.on_surface_variant),
                 );
@@ -519,13 +566,40 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
             });
             ui.add_space(10.0);
 
+            // ── compare modes ──
+            // The compare bar can only show a one-line hint: anything longer
+            // would be covered by the native picture planes, so the full
+            // explanation lives here.
+            controls::surface_card(ui, &p, |ui| {
+                section_title(ui, &p, app.t("对比模式", "Compare modes"));
+                ui.add_space(8.0);
+                for mode in CompareMode::ALL {
+                    ui.horizontal(|ui| {
+                        let selected = app.settings.mode == mode;
+                        if controls::chip(ui, &p, mode.label(app.settings.lang), selected).clicked()
+                            && !selected
+                        {
+                            app.set_mode(mode);
+                        }
+                        ui.add_space(10.0);
+                        ui.label(
+                            egui::RichText::new(mode.about(app.settings.lang))
+                                .size(11.5)
+                                .color(p.on_surface_variant),
+                        );
+                    });
+                    ui.add_space(6.0);
+                }
+            });
+            ui.add_space(10.0);
+
             // ── playback ──
             controls::surface_card(ui, &p, |ui| {
-                section_title(ui, &p, "播放");
+                section_title(ui, &p, app.t("播放", "Playback"));
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("硬件解码")
+                        egui::RichText::new(app.t("硬件解码", "Hardware decoding"))
                             .size(12.5)
                             .color(p.on_surface_variant),
                     );
@@ -539,7 +613,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                         ui.add_space(4.0);
                     }
                     ui.label(
-                        egui::RichText::new("下次载入生效")
+                        egui::RichText::new(app.t("下次载入生效", "applies on next load"))
                             .size(10.0)
                             .color(p.outline),
                     );
@@ -547,7 +621,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("循环当前文件")
+                        egui::RichText::new(app.t("循环当前文件", "Loop current file"))
                             .size(12.5)
                             .color(p.on_surface_variant),
                     );
@@ -559,7 +633,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                     }
                     ui.add_space(24.0);
                     ui.label(
-                        egui::RichText::new("显示播放列表")
+                        egui::RichText::new(app.t("显示播放列表", "Show playlist"))
                             .size(12.5)
                             .color(p.on_surface_variant),
                     );
@@ -573,7 +647,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("默认音量")
+                        egui::RichText::new(app.t("默认音量", "Default volume"))
                             .size(12.5)
                             .color(p.on_surface_variant),
                     );
@@ -593,7 +667,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("擦洗灵敏度")
+                        egui::RichText::new(app.t("擦洗灵敏度", "Scrub sensitivity"))
                             .size(12.5)
                             .color(p.on_surface_variant),
                     );
@@ -614,8 +688,9 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                     }
                     ui.label(
                         egui::RichText::new(format!(
-                            "{:.0} px / 帧（越小越跟手）",
-                            app.settings.scrub_ppf
+                            "{:.0} {}",
+                            app.settings.scrub_ppf,
+                            app.t("px / 帧（越小越跟手）", "px per frame (smaller = closer)")
                         ))
                         .size(11.5)
                         .monospace()
@@ -627,27 +702,51 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
 
             // ── shortcuts ──
             controls::surface_card(ui, &p, |ui| {
-                section_title(ui, &p, "快捷键");
+                section_title(ui, &p, app.t("快捷键", "Shortcuts"));
                 ui.add_space(8.0);
                 egui::Grid::new("shortcuts")
                     .num_columns(2)
                     .spacing([24.0, 6.0])
                     .show(ui, |ui| {
                         for (keys, what) in [
-                            ("空格", "播放 / 暂停"),
-                            ("画面左键拖动", "逐帧擦洗：左退右进，1 px = 1 帧"),
-                            ("画面中键拖动", "平移画面"),
-                            ("滚轮 / Ctrl+滚轮", "音量 / 缩放"),
-                            ("画面双击", "全屏"),
-                            ("← →", "后退 / 前进 5 秒"),
-                            ("J L", "后退 / 前进 10 秒"),
-                            (", .", "上一帧 / 下一帧"),
-                            ("↑ ↓", "音量增减"),
-                            ("M", "静音"),
-                            ("1 2 3 4", "单画面 / 并排 / 划像 / 闪烁"),
-                            ("[ ]", "划像分界移动"),
-                            ("Tab", "显示 / 隐藏播放列表"),
-                            ("F / Esc", "全屏 / 退出全屏"),
+                            ("Space", app.t("播放 / 暂停", "Play / pause")),
+                            (
+                                app.t("画面左键拖动", "Drag in picture"),
+                                app.t(
+                                    "逐帧擦洗：左退右进",
+                                    "Frame scrub: left is back, right is forward",
+                                ),
+                            ),
+                            (
+                                app.t("画面中键拖动", "Middle drag"),
+                                app.t("平移画面", "Pan the picture"),
+                            ),
+                            (
+                                app.t("滚轮 / Ctrl+滚轮", "Wheel / Ctrl+wheel"),
+                                app.t("音量 / 缩放", "Volume / zoom"),
+                            ),
+                            (
+                                app.t("画面双击", "Double-click"),
+                                app.t("全屏", "Full screen"),
+                            ),
+                            ("← →", app.t("后退 / 前进 5 秒", "Back / forward 5 s")),
+                            ("J L", app.t("后退 / 前进 10 秒", "Back / forward 10 s")),
+                            (", .", app.t("上一帧 / 下一帧", "Previous / next frame")),
+                            ("↑ ↓", app.t("音量增减", "Volume up / down")),
+                            ("M", app.t("静音", "Mute")),
+                            (
+                                "1 2 3 4",
+                                app.t(
+                                    "单画面 / 并排 / 划像 / 闪烁",
+                                    "Single / side by side / wipe / flicker",
+                                ),
+                            ),
+                            ("[ ]", app.t("划像分界移动", "Move the wipe divider")),
+                            (
+                                "Tab",
+                                app.t("显示 / 隐藏播放列表", "Show / hide the playlist"),
+                            ),
+                            ("F / Esc", app.t("全屏 / 退出全屏", "Full screen / leave")),
                         ] {
                             controls::badge(ui, &p, keys, p.surface_container_high, p.on_surface);
                             ui.label(
@@ -663,12 +762,12 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
 
             // ── about ──
             controls::surface_card(ui, &p, |ui| {
-                section_title(ui, &p, "关于");
+                section_title(ui, &p, app.t("关于", "About"));
                 ui.add_space(6.0);
                 let lib_state = if app.lib.is_some() {
-                    "已加载"
+                    app.t("已加载", "loaded")
                 } else {
-                    "未加载"
+                    app.t("未加载", "missing")
                 };
                 ui.label(
                     egui::RichText::new(format!(
@@ -682,9 +781,12 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                 );
                 ui.add_space(4.0);
                 ui.label(
-                    egui::RichText::new("进程内 libmpv + Win32 子窗口 · Material You 主题")
-                        .size(11.0)
-                        .color(p.outline),
+                    egui::RichText::new(app.t(
+                        "进程内 libmpv + Win32 子窗口 · Material You 主题",
+                        "in-process libmpv + Win32 child windows · Material You theming",
+                    ))
+                    .size(11.0)
+                    .color(p.outline),
                 );
                 if let Some(err) = app.boot_error.clone() {
                     ui.add_space(6.0);

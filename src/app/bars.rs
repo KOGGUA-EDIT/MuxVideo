@@ -30,7 +30,7 @@ fn file_badge(ui: &mut Ui, app: &mut MuxApp, plane: Target) {
         ),
         None => (
             if plane == Target::B { "B" } else { "A" },
-            "未载入".to_string(),
+            app.t("未载入", "Empty").to_string(),
         ),
     };
     let name = truncate(&name, 26);
@@ -93,7 +93,7 @@ fn file_badge(ui: &mut Ui, app: &mut MuxApp, plane: Target) {
     }
     response.on_hover_text(match path {
         Some(path) => path.to_string_lossy().to_string(),
-        None => "点击选择文件".into(),
+        None => app.t("点击选择文件", "Click to choose a file").into(),
     });
 }
 
@@ -244,18 +244,10 @@ pub(super) fn titlebar(ui: &mut Ui, app: &mut MuxApp) {
                 ui.add_space(4.0);
                 let full = app.immersive();
                 if icon_button(ui, &p, 38.0, full, icons::fullscreen)
-                    .on_hover_text("全屏画面（F）")
+                    .on_hover_text(app.t("全屏画面（F）", "Full-screen picture (F)"))
                     .clicked()
                 {
                     app.toggle_immersive(ui.ctx());
-                }
-                let settings_active = app.rail == RailTab::Settings;
-                if icon_button(ui, &p, 38.0, settings_active, icons::settings).clicked() {
-                    app.rail = if settings_active {
-                        RailTab::Viewer
-                    } else {
-                        RailTab::Settings
-                    };
                 }
                 let list_active = app.settings.show_playlist;
                 if icon_button(ui, &p, 38.0, list_active, icons::playlist).clicked() {
@@ -282,16 +274,16 @@ fn rail_item(
     let hover = ui
         .ctx()
         .animate_bool_with_time(response.id, response.hovered(), 0.12);
-    let pill = Rect::from_center_size(pos2(rect.center().x, rect.min.y + 16.0), vec2(56.0, 32.0));
-    let fill = if active {
-        p.secondary_container
-    } else if hover > 0.0 {
-        p.surface_container_high.gamma_multiply(hover * 0.9)
-    } else {
-        Color32::TRANSPARENT
-    };
-    if fill != Color32::TRANSPARENT {
-        ui.painter().rect_filled(pill, CornerRadius::same(16), fill);
+    // The active pill is drawn by `rail` so it can slide between items; this
+    // item only paints its own hover state on top of it.
+    if hover > 0.0 && !active {
+        let pill =
+            Rect::from_center_size(pos2(rect.center().x, rect.min.y + 16.0), vec2(56.0, 32.0));
+        ui.painter().rect_filled(
+            pill,
+            CornerRadius::same(16),
+            p.surface_container_high.gamma_multiply(hover * 0.9),
+        );
     }
     let fg = if active {
         p.on_secondary_container
@@ -300,7 +292,8 @@ fn rail_item(
     } else {
         p.on_surface_variant
     };
-    let icon_rect = Rect::from_center_size(pill.center(), Vec2::splat(20.0));
+    let icon_rect =
+        Rect::from_center_size(pos2(rect.center().x, rect.min.y + 16.0), Vec2::splat(20.0));
     let mut child = ui.new_child(
         UiBuilder::new()
             .max_rect(icon_rect)
@@ -310,7 +303,10 @@ fn rail_item(
     ui.painter().text(
         pos2(rect.center().x, rect.max.y - 12.0),
         Align2::CENTER_CENTER,
-        tab.label(),
+        match tab {
+            RailTab::Viewer => app.t("查看", "View"),
+            RailTab::Settings => app.t("设置", "Settings"),
+        },
         FontId::proportional(11.5),
         if active {
             p.on_surface
@@ -318,17 +314,10 @@ fn rail_item(
             p.on_surface_variant
         },
     );
-    response.clone().on_hover_text(tab.label());
     if response.clicked() {
         app.rail = tab;
-        match tab {
-            RailTab::Viewer => app.set_mode(CompareMode::Single),
-            RailTab::Compare => {
-                if app.settings.mode == CompareMode::Single {
-                    app.set_mode(CompareMode::Pair);
-                }
-            }
-            RailTab::Settings => {}
+        if tab == RailTab::Viewer && app.settings.mode == CompareMode::Single {
+            // Keep whatever comparison mode the toolbar has selected.
         }
     }
 }
@@ -339,26 +328,35 @@ pub(super) fn rail(ui: &mut Ui, app: &mut MuxApp) {
     ui.painter()
         .rect_filled(full, CornerRadius::ZERO, p.surface);
 
+    type Glyph = fn(&mut Ui, f32, Color32) -> egui::Response;
+    const ITEM_H: f32 = 62.0;
+    const GAP: f32 = 8.0;
+    const TOP: f32 = 12.0;
+    let items: [(RailTab, Glyph); 2] = [
+        (RailTab::Viewer, icons::grid),
+        (RailTab::Settings, icons::settings),
+    ];
+    let index = items
+        .iter()
+        .position(|(tab, _)| *tab == app.rail)
+        .unwrap_or(0);
+    let goal = full.min.y + TOP + index as f32 * (ITEM_H + GAP) + 16.0;
+    let center_y = app.animate_rail_pill(goal, ui.ctx());
+    let pill = Rect::from_center_size(pos2(full.center().x, center_y), vec2(56.0, 32.0));
+    ui.painter()
+        .rect_filled(pill, CornerRadius::same(16), p.secondary_container);
+
     ui.scope_builder(
         UiBuilder::new()
-            .max_rect(full.shrink2(vec2(0.0, 8.0)))
+            .max_rect(full)
             .layout(Layout::top_down(Align::Center)),
         |ui| {
-            // Brand.
-            let (logo, _) = ui.allocate_exact_size(Vec2::splat(44.0), Sense::hover());
-            ui.painter()
-                .rect_filled(logo, CornerRadius::same(14), p.primary_container);
-            let mut child = ui.new_child(
-                UiBuilder::new()
-                    .max_rect(logo)
-                    .layout(Layout::centered_and_justified(egui::Direction::LeftToRight)),
-            );
-            icons::play(&mut child, 22.0, p.on_primary_container);
-            ui.add_space(20.0);
-
-            rail_item(ui, app, RailTab::Viewer, icons::grid);
-            rail_item(ui, app, RailTab::Compare, icons::compare);
-            rail_item(ui, app, RailTab::Settings, icons::settings);
+            ui.spacing_mut().item_spacing.y = 0.0;
+            ui.add_space(TOP);
+            for (tab, glyph) in items {
+                rail_item(ui, app, tab, glyph);
+                ui.add_space(GAP);
+            }
         },
     );
 
@@ -383,15 +381,17 @@ pub(super) fn rail(ui: &mut Ui, app: &mut MuxApp) {
             );
         },
     );
-
-    // Rail click handling happens through the item responses' interaction with
-    // `app.rail`; the items are drawn above so we apply clicks after painting.
-    let _ = app.rail;
 }
 
 /// Compare toolbar + the video stage rectangle.
 pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
     let p = app.palette.clone();
+    // The row is shared by chips on the left and controls on the right; when the
+    // stage is narrow (playlist open, long English labels) the optional labels
+    // have to give way instead of overlapping the buttons.
+    let row_w = ui.available_width();
+    let show_split_label = row_w > 1080.0;
+    let show_percent = row_w > 1140.0;
 
     // Compare bar.
     let (bar_rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 50.0), Sense::hover());
@@ -402,10 +402,9 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
         |ui| {
             for mode in CompareMode::ALL {
                 let selected = app.settings.mode == mode;
-                if controls::chip(ui, &p, mode.label(), selected)
-                    .on_hover_text(format!("{}\n{}", mode.hint(), mode.about()))
-                    .clicked()
-                {
+                // No hover card here: the native video plane sits above egui, so
+                // anything drawn below the toolbar gets covered by the picture.
+                if controls::chip(ui, &p, mode.label(app.settings.lang), selected).clicked() {
                     app.set_mode(mode);
                 }
                 ui.add_space(6.0);
@@ -418,7 +417,7 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
                     .rect_filled(sep, CornerRadius::same(1), p.outline_variant);
                 ui.add_space(8.0);
                 for axis in [SplitAxis::Horizontal, SplitAxis::Vertical] {
-                    if controls::chip(ui, &p, axis.label(), app.settings.axis == axis).clicked() {
+                    if controls::chip(ui, &p, axis.label(app.settings.lang), app.settings.axis == axis).clicked() {
                         app.settings.axis = axis;
                         app.settings_dirty = true;
                     }
@@ -426,29 +425,37 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
                 }
                 if app.settings.mode == CompareMode::Wipe {
                     ui.add_space(10.0);
-                    ui.label(
-                        egui::RichText::new("分界")
-                            .size(12.0)
-                            .color(p.on_surface_variant),
-                    );
-                    ui.add_space(6.0);
+                    if show_split_label {
+                        ui.label(
+                            egui::RichText::new(app.t("分界", "Split"))
+                                .size(12.0)
+                                .color(p.on_surface_variant),
+                        );
+                        ui.add_space(6.0);
+                    }
                     let mut wipe = app.settings.wipe;
                     if controls::slider(ui, &p, 150.0, &mut wipe, true).changed() {
                         app.settings.wipe = wipe;
                         app.settings_dirty = true;
                     }
-                    ui.label(
-                        egui::RichText::new(format!("{:>3.0}%", app.settings.wipe * 100.0))
-                            .size(11.0)
-                            .monospace()
-                            .color(p.on_surface_variant),
-                    );
+                    if show_percent {
+                        ui.label(
+                            egui::RichText::new(format!("{:>3.0}%", app.settings.wipe * 100.0))
+                                .size(11.0)
+                                .monospace()
+                                .color(p.on_surface_variant),
+                        );
+                    }
+                    ui.add_space(14.0);
                 }
             }
 
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                // Space still free after the left hand chips; the sync read-out
+                // and the mode hint only appear when they will not collide.
+                let room = ui.available_width();
                 if icon_button(ui, &p, 34.0, false, icons::camera)
-                    .on_hover_text("截图：把当前帧存到「图片」文件夹（S）")
+                    .on_hover_text(app.t("截图：把当前帧存到「图片」文件夹（S）", "Save the current frame to Pictures (S)"))
                     .clicked()
                 {
                     super::input::snapshot(app);
@@ -456,8 +463,9 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
                 // 适应 / 填充: letterbox vs crop-to-fill the stage.
                 {
                     let fill = app.settings.fill;
-                    if controls::chip(ui, &p, if fill { "填充" } else { "适应" }, fill)
-                        .on_hover_text("适应＝完整显示（可能有黑边）；填充＝铺满画面（裁掉溢出）")
+                    let fill_label = if fill { app.t("填充", "Fill") } else { app.t("适应", "Fit") };
+                    if controls::chip(ui, &p, fill_label, fill)
+                        .on_hover_text(app.t("适应＝完整显示（可能有黑边）；填充＝铺满画面（裁掉溢出）", "Fit shows the whole frame (may letterbox); Fill crops to cover the stage"))
                         .clicked()
                     {
                         app.settings.fill = !fill;
@@ -467,23 +475,33 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
                     ui.add_space(6.0);
                 }
                 if app.media.file_a.is_some() && app.media.file_b.is_some() {
-                    if icon_button(ui, &p, 34.0, false, icons::swap)
-                        .on_hover_text("交换 A / B")
-                        .clicked()
+                    // A labelled button instead of an icon with a tooltip: the
+                    // native picture sits above egui, so any tooltip opening
+                    // below the toolbar gets covered by the video.
+                    if controls::pill_button(
+                        ui,
+                        &p,
+                        app.t("交换 A / B", "Swap A / B"),
+                        false,
+                        Some(icons::swap),
+                    )
+                    .clicked()
                     {
                         app.swap_planes();
                     }
                     ui.add_space(6.0);
                 }
                 if app.settings.mode.needs_b() && app.media.file_b.is_none() {
-                    if controls::pill_button(ui, &p, "载入 B", false, Some(icons::playlist))
+                    if controls::pill_button(ui, &p, app.t("载入 B", "Load B"), false, Some(icons::playlist))
                         .clicked()
                     {
                         app.pick_files(ui.ctx(), Target::B);
                     }
                     ui.add_space(6.0);
                 }
-                if let Some(text) = drift_text(app) {
+                if let Some(text) = drift_text(app)
+                    && room > 330.0
+                {
                     ui.label(
                         egui::RichText::new(text)
                             .size(11.0)
@@ -491,10 +509,10 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
                             .color(p.on_surface_variant),
                     );
                 }
-                if app.settings.mode.needs_b() && ui.available_width() > 200.0 {
+                if app.settings.mode.needs_b() && room > 560.0 {
                     ui.add_space(12.0);
                     ui.label(
-                        egui::RichText::new(app.settings.mode.hint())
+                        egui::RichText::new(app.settings.mode.hint(app.settings.lang))
                             .size(11.0)
                             .color(p.on_surface_variant.gamma_multiply(0.85)),
                     );
@@ -523,39 +541,11 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
     if !app.has_video() {
         empty_stage(ui, app, stage);
     } else {
-        // Wipe mode leaves a 3 px hole between the native planes; paint the
-        // handle colour into it so the split line is always visible.
-        if app.settings.mode == CompareMode::Wipe && app.media.file_b.is_some() {
-            let frac = app.settings.wipe.clamp(0.0, 1.0);
-            let line = match app.settings.axis {
-                SplitAxis::Horizontal => {
-                    let x = stage.left() + stage.width() * frac;
-                    Rect::from_min_max(pos2(x - 3.0, stage.top()), pos2(x + 3.0, stage.bottom()))
-                }
-                SplitAxis::Vertical => {
-                    let y = stage.top() + stage.height() * frac;
-                    Rect::from_min_max(pos2(stage.left(), y - 3.0), pos2(stage.right(), y + 3.0))
-                }
-            };
-            ui.painter().rect_filled(
-                line.shrink2(vec2(
-                    0.0,
-                    if app.settings.axis == SplitAxis::Horizontal {
-                        0.0
-                    } else {
-                        1.0
-                    },
-                )),
-                CornerRadius::same(2),
-                p.primary,
-            );
-        }
-
         // Corner caption sits inside the stage but outside the video chrome.
         let caption = format!(
             "{} · {}",
-            app.settings.mode.label(),
-            app.settings.mode.hint()
+            app.settings.mode.label(app.settings.lang),
+            app.settings.mode.hint(app.settings.lang)
         );
         ui.painter().text(
             pos2(stage.min.x + 16.0, stage.min.y + 14.0),
@@ -609,25 +599,44 @@ fn empty_stage(ui: &mut Ui, app: &mut MuxApp, stage: Rect) {
             icons::folder_open(&mut child, 24.0, p.on_primary_container);
             ui.add_space(14.0);
             ui.label(
-                egui::RichText::new("拖入视频，或直接打开")
-                    .size(17.0)
-                    .strong()
-                    .color(p.on_surface),
+                egui::RichText::new(
+                    app.t("拖入视频，或直接打开", "Drop a video here, or open one"),
+                )
+                .size(17.0)
+                .strong()
+                .color(p.on_surface),
             );
             ui.add_space(4.0);
             ui.label(
-                egui::RichText::new("A 面作基准，B 面作对照 · mp4 / mkv / mov / webm / ts …")
-                    .size(12.0)
-                    .color(p.on_surface_variant),
+                egui::RichText::new(app.t(
+                    "A 面作基准，B 面作对照 · mp4 / mkv / mov / webm / ts …",
+                    "A is the reference, B the comparison · mp4 / mkv / mov / webm / ts …",
+                ))
+                .size(12.0)
+                .color(p.on_surface_variant),
             );
             ui.add_space(16.0);
             ui.horizontal(|ui| {
-                if controls::pill_button(ui, &p, "打开 A 面", true, Some(icons::play)).clicked()
+                if controls::pill_button(
+                    ui,
+                    &p,
+                    app.t("打开 A 面", "Open A"),
+                    true,
+                    Some(icons::play),
+                )
+                .clicked()
                 {
                     app.pick_files(ui.ctx(), Target::A);
                 }
                 ui.add_space(8.0);
-                if controls::pill_button(ui, &p, "打开 B 面", false, Some(icons::compare)).clicked()
+                if controls::pill_button(
+                    ui,
+                    &p,
+                    app.t("打开 B 面", "Open B"),
+                    false,
+                    Some(icons::compare),
+                )
+                .clicked()
                 {
                     app.pick_files(ui.ctx(), Target::B);
                 }
@@ -641,7 +650,7 @@ fn drift_text(app: &MuxApp) -> Option<String> {
         return None;
     }
     if app.media.player_b.is_none() {
-        return Some("等待 B 面".into());
+        return Some(app.t("等待 B 面", "Waiting for B").to_string());
     }
     let drift = app.media.drift;
     Some(format!("同步 Δ{:+.0} ms", drift * 1000.0))
@@ -772,7 +781,7 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
             };
             tall(ui, 34.0, &mut |ui| {
                 if icon_button(ui, &p, 34.0, false, icons::step_back)
-                    .on_hover_text("上一帧（,）")
+                    .on_hover_text(app.t("上一帧（,）", "Previous frame (,)"))
                     .clicked()
                 {
                     app.step_frame(false);
@@ -781,7 +790,7 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
             ui.add_space(6.0);
             tall(ui, 48.0, &mut |ui| {
                 if play_button(ui, app)
-                    .on_hover_text("播放 / 暂停（空格）")
+                    .on_hover_text(app.t("播放 / 暂停（空格）", "Play / pause (Space)"))
                     .clicked()
                 {
                     app.toggle_play();
@@ -790,7 +799,7 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
             ui.add_space(6.0);
             tall(ui, 34.0, &mut |ui| {
                 if icon_button(ui, &p, 34.0, false, icons::step_forward)
-                    .on_hover_text("下一帧（.）")
+                    .on_hover_text(app.t("下一帧（.）", "Next frame (.)"))
                     .clicked()
                 {
                     app.step_frame(true);
@@ -800,8 +809,8 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
             let info = if app.has_video() {
                 format!(
                     "{} / {}",
-                    app.settings.mode.label(),
-                    app.settings.axis.label()
+                    app.settings.mode.label(app.settings.lang),
+                    app.settings.axis.label(app.settings.lang)
                 )
             } else {
                 "无媒体".to_string()
@@ -854,7 +863,7 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
                         icons::volume
                     },
                 )
-                .on_hover_text("静音（M）")
+                .on_hover_text(app.t("静音（M）", "Mute (M)"))
                 .clicked()
                 {
                     app.settings.muted = !app.settings.muted;
@@ -869,7 +878,7 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
 
                 // Loop toggle.
                 if icon_button(ui, &p, 34.0, app.settings.loop_file, icons::loop_icon)
-                    .on_hover_text("循环播放")
+                    .on_hover_text(app.t("循环播放", "Loop"))
                     .clicked()
                 {
                     app.settings.loop_file = !app.settings.loop_file;
@@ -880,7 +889,7 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
                 // Speed chip cycles through the common rates.
                 let speed_label = format!("{}×", trim_speed(app.settings.speed));
                 if controls::chip(ui, &p, &speed_label, app.settings.speed != 1.0)
-                    .on_hover_text("播放速度")
+                    .on_hover_text(app.t("播放速度", "Playback speed"))
                     .clicked()
                 {
                     let idx = SPEEDS

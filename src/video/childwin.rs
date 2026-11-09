@@ -13,32 +13,192 @@
 
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering as AtomicOrdering};
 use std::sync::{Mutex, MutexGuard, OnceLock};
 
 use anyhow::bail;
 use windows_sys::Win32::Foundation::{
-    ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, RECT, WPARAM,
+    ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    BLACK_BRUSH, CreateRectRgn, DeleteObject, FillRect, GetDC, GetStockObject, ReleaseDC,
-    SetWindowRgn, ValidateRect,
+    BLACK_BRUSH, BeginPaint, ClientToScreen, CreatePen, CreateRectRgn, CreateRoundRectRgn,
+    CreateSolidBrush, DeleteObject, EndPaint, FillRect, GetDC, GetStockObject, InvalidateRect,
+    LineTo, MoveToEx, PAINTSTRUCT, ReleaseDC, ScreenToClient, SelectObject, SetWindowRgn,
+    ValidateRect,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, CallWindowProcW, CreateWindowExW, DefWindowProcW,
-    DestroyWindow, EnumWindows, GWLP_WNDPROC, GetClientRect, GetWindowTextLengthW, GetWindowTextW,
-    GetWindowThreadProcessId, HMENU, HWND_TOP, IDC_ARROW, IsWindow, LoadCursorW, MA_NOACTIVATE,
-    RegisterClassW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CAPTURECHANGED, WM_ERASEBKGND,
-    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP,
-    WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDBLCLK,
-    WM_RBUTTONDOWN, WM_RBUTTONUP, WNDCLASSW, WNDPROC, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
-    WS_VISIBLE,
+    DestroyWindow, EnumChildWindows, EnumWindows, GWLP_WNDPROC, GetClientRect,
+    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HMENU, HWND_TOP, IDC_ARROW,
+    IsWindow, LoadCursorW, MA_NOACTIVATE, RegisterClassW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    WM_CAPTURECHANGED, WM_ERASEBKGND, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL,
+    WM_NCDESTROY, WM_PAINT, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WNDCLASSW, WNDPROC,
+    WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_VISIBLE,
 };
 use windows_sys::core::BOOL;
 
 /// Window class name shared by every native video surface.
 const CLASS_NAME: &str = "MuxVideoSurface";
+
+/// Window class name of the wipe grip handle.
+const GRIP_CLASS: &str = "MuxVideoGrip";
+
+/// Handle colours, as `0x00BBGGRR` (Win32 `COLORREF`).
+static GRIP_BG: AtomicU32 = AtomicU32::new(0x00FF_BCD0);
+static GRIP_FG: AtomicU32 = AtomicU32::new(0x0022_1938);
+/// `true` when the divider is vertical (handle is a tall pill).
+static GRIP_VERTICAL: AtomicBool = AtomicBool::new(true);
+
+/// Updates the grip colours and orientation.
+///
+/// `bg` / `fg` are `0xRRGGBB` values straight from the Material palette so the
+/// handle follows the seed colour like everything else in the UI.
+pub fn set_grip_style(bg: u32, fg: u32, vertical: bool) {
+    let to_colorref = |rgb: u32| -> u32 {
+        let r = (rgb >> 16) & 0xFF;
+        let g = (rgb >> 8) & 0xFF;
+        let b = rgb & 0xFF;
+        (b << 16) | (g << 8) | r
+    };
+    GRIP_BG.store(to_colorref(bg), AtomicOrdering::Relaxed);
+    GRIP_FG.store(to_colorref(fg), AtomicOrdering::Relaxed);
+    GRIP_VERTICAL.store(vertical, AtomicOrdering::Relaxed);
+}
+
+/// Paints the grip: a solid rounded pill plus three short grip lines.
+///
+/// # Safety
+/// Called by the window manager with a live `HWND` it owns.
+unsafe extern "system" fn grip_wndproc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match message {
+        WM_ERASEBKGND => 1, // painted in WM_PAINT; skip the flicker
+        WM_PAINT => {
+            let mut paint = PAINTSTRUCT::default();
+            // SAFETY: BeginPaint requires a window being painted; `paint` is
+            // stack storage owned by this frame.
+            let dc = unsafe { BeginPaint(hwnd, &mut paint) };
+            if !dc.is_null() {
+                let mut rect = RECT::default();
+                // SAFETY: client rect of a live window.
+                let (w, h) = unsafe {
+                    if GetClientRect(hwnd, &mut rect) != 0 {
+                        (rect.right, rect.bottom)
+                    } else {
+                        (0, 0)
+                    }
+                };
+                if w > 0 && h > 0 {
+                    // SAFETY: brushes/pens are created and deleted in this
+                    // scope; the DC is valid until EndPaint.
+                    unsafe {
+                        let bg = CreateSolidBrush(GRIP_BG.load(AtomicOrdering::Relaxed));
+                        if !bg.is_null() {
+                            FillRect(dc, &rect, bg);
+                            DeleteObject(bg);
+                        }
+                        let fg = CreatePen(0, 2, GRIP_FG.load(AtomicOrdering::Relaxed));
+                        if !fg.is_null() {
+                            let old = SelectObject(dc, fg);
+                            let vertical = GRIP_VERTICAL.load(AtomicOrdering::Relaxed);
+                            let cx = w / 2;
+                            let cy = h / 2;
+                            for i in -1..=1 {
+                                let offset = i * 5;
+                                if vertical {
+                                    MoveToEx(dc, cx - 3, cy + offset, std::ptr::null_mut());
+                                    LineTo(dc, cx + 3, cy + offset);
+                                } else {
+                                    MoveToEx(dc, cx + offset, cy - 3, std::ptr::null_mut());
+                                    LineTo(dc, cx + offset, cy + 3);
+                                }
+                            }
+                            SelectObject(dc, old);
+                            DeleteObject(fg);
+                        }
+                    }
+                }
+                // SAFETY: pairs with BeginPaint above.
+                unsafe { EndPaint(hwnd, &paint) };
+            }
+            0
+        }
+        _ => {
+            // SAFETY: default handling for every message we do not paint.
+            unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+        }
+    }
+}
+
+/// Registers the grip window class exactly once per process.
+fn ensure_grip_class() -> anyhow::Result<()> {
+    let mut registered = lock(&GRIP_MODULE.0);
+    if registered.is_some() {
+        return Ok(());
+    }
+
+    // SAFETY: current-executable handle, alive for the process lifetime.
+    let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
+    if instance.is_null() {
+        bail!("GetModuleHandleW(NULL) failed");
+    }
+
+    let class_name = wide(GRIP_CLASS);
+    let window_class = WNDCLASSW {
+        style: CS_HREDRAW | CS_VREDRAW,
+        lpfnWndProc: Some(grip_wndproc),
+        hInstance: instance,
+        // SAFETY: stock resources are process-wide and not owned by us.
+        hCursor: unsafe { LoadCursorW(std::ptr::null_mut(), IDC_ARROW) },
+        // SAFETY: BLACK_BRUSH is a stock object (HGDIOBJ -> HBRUSH cast).
+        hbrBackground: unsafe { GetStockObject(BLACK_BRUSH) },
+        lpszClassName: class_name.as_ptr(),
+        ..Default::default()
+    };
+
+    // SAFETY: `window_class` is fully initialised, `class_name` is NUL
+    // terminated and stays alive for the call.
+    let atom = unsafe { RegisterClassW(&window_class) };
+    if atom == 0 {
+        // SAFETY: no arguments, always safe to call.
+        let error = unsafe { GetLastError() };
+        if error != ERROR_CLASS_ALREADY_EXISTS {
+            bail!("RegisterClassW({GRIP_CLASS}) failed (Win32 error {error})");
+        }
+    }
+    *registered = Some(instance);
+    Ok(())
+}
+
+/// Maps a client point of `from` into the client space of `to`.
+///
+/// Used when the pointer is captured by the grip window but the drag has to be
+/// interpreted in the coordinates of the picture plane underneath.
+pub fn map_point(from: i64, to: i64, x: i32, y: i32) -> Option<(i32, i32)> {
+    let from = from as usize as HWND;
+    let to = to as usize as HWND;
+    if from.is_null() || to.is_null() {
+        return None;
+    }
+    let mut point = POINT { x, y };
+    // SAFETY: both handles are live windows; `point` is stack storage.
+    unsafe {
+        if ClientToScreen(from, &mut point) == 0 {
+            return None;
+        }
+        if ScreenToClient(to, &mut point) == 0 {
+            return None;
+        }
+    }
+    Some((point.x, point.y))
+}
 
 /// Finds the toplevel window with an exact title that belongs to this process.
 ///
@@ -124,6 +284,9 @@ unsafe impl Send for ClassModule {}
 unsafe impl Sync for ClassModule {}
 
 static CLASS_MODULE: ClassModule = ClassModule(Mutex::new(None));
+
+/// Module handle recorded once the grip class is registered.
+static GRIP_MODULE: ClassModule = ClassModule(Mutex::new(None));
 
 /// Registers the surface window class exactly once per process.
 fn ensure_class() -> anyhow::Result<()> {
@@ -286,6 +449,38 @@ fn client_point(lparam: LPARAM) -> (i32, i32) {
 
 fn wheel_delta(wparam: WPARAM) -> i32 {
     ((wparam as u32 >> 16) & 0xffff) as u16 as i16 as i32
+}
+
+/// Whether `hwnd` still refers to a live window.
+pub fn is_window(hwnd: i64) -> bool {
+    hwnd != 0 && unsafe { IsWindow(hwnd as usize as HWND) } != 0
+}
+
+/// Handle of every direct child window of `hwnd`.
+///
+/// With `--wid` libmpv renders inside a window it creates below the surface we
+/// hand it, so pointer messages are delivered to that child instead of our own
+/// surface. Callers subclass those handles as well, otherwise dragging stops
+/// working as soon as the renderer window is (re)created.
+pub fn child_windows(hwnd: i64) -> Vec<i64> {
+    if hwnd == 0 {
+        return Vec::new();
+    }
+    let mut out: Vec<i64> = Vec::new();
+    let context = std::ptr::from_mut(&mut out).cast::<c_void>() as LPARAM;
+    // SAFETY: `EnumChildWindows` calls the callback synchronously while
+    // `context` is alive, and the callback only appends to that `Vec`.
+    unsafe { EnumChildWindows(hwnd as usize as HWND, Some(enum_child), context) };
+    out
+}
+
+/// # Safety
+/// `lparam` must be the `Vec<i64>` pointer passed by [`child_windows`].
+unsafe extern "system" fn enum_child(hwnd: HWND, lparam: LPARAM) -> BOOL {
+    // SAFETY: see the contract above; the pointer outlives the enumeration.
+    let out = unsafe { &mut *(lparam as *mut Vec<i64>) };
+    out.push(hwnd as usize as i64);
+    1
 }
 
 /// Installs the pointer capture subclass on a native surface.
@@ -713,6 +908,97 @@ impl ChildWindow {
         // keeps ownership of the old one.
         unsafe {
             SetWindowRgn(self.hwnd, std::ptr::null_mut(), 1);
+        }
+    }
+
+    /// Creates the wipe grip: a small native window that paints itself like a
+    /// Material handle.
+    ///
+    /// egui cannot draw over the native picture planes, so the divider handle
+    /// has to be a native window of its own; [`set_grip_style`] supplies the
+    /// colours and orientation, and the window rounds its own corners.
+    pub fn create_grip(parent: i64, id: u32, name: &str) -> anyhow::Result<Self> {
+        ensure_grip_class()?;
+
+        // SAFETY: current-executable handle, alive for the process lifetime.
+        let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
+        if instance.is_null() {
+            bail!("GetModuleHandleW(NULL) failed");
+        }
+
+        let parent = parent as usize as HWND;
+        if parent.is_null() {
+            bail!("cannot create {GRIP_CLASS}: parent handle is NULL");
+        }
+
+        let class_name = wide(GRIP_CLASS);
+        let title = wide(name);
+        // SAFETY: both UTF-16 strings are live for the call; the class is
+        // registered and `parent` is a live window of ours.
+        let hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                class_name.as_ptr(),
+                title.as_ptr(),
+                WS_CHILD | WS_CLIPSIBLINGS,
+                0,
+                0,
+                18,
+                56,
+                parent,
+                id as usize as HMENU,
+                instance,
+                std::ptr::null(),
+            )
+        };
+        if hwnd.is_null() {
+            // SAFETY: no arguments, always safe to call.
+            let error = unsafe { GetLastError() };
+            bail!("CreateWindowExW({GRIP_CLASS}) failed (Win32 error {error})");
+        }
+
+        install_input_hook(hwnd as isize as i64);
+        Ok(Self { hwnd })
+    }
+
+    /// Applies the rounded-pill region matching the current size.
+    ///
+    /// Called after every resize so the handle keeps its Material shape
+    /// instead of becoming a rectangle.
+    pub fn round_corners(&self, radius: i32) {
+        let mut rect = RECT::default();
+        // SAFETY: client rect query on a live HWND; `RECT` is a plain struct.
+        let (w, h) = unsafe {
+            if GetClientRect(self.hwnd, &mut rect) != 0 {
+                (rect.right - rect.left, rect.bottom - rect.top)
+            } else {
+                (0, 0)
+            }
+        };
+        if w <= 0 || h <= 0 {
+            return;
+        }
+        // SAFETY: CreateRoundRectRgn needs no window and returns an owned
+        // region, which SetWindowRgn takes over on success.
+        let region = unsafe { CreateRoundRectRgn(0, 0, w + 1, h + 1, radius, radius) };
+        if region.is_null() {
+            return;
+        }
+        // SAFETY: `region` is valid; on success the system owns it.
+        let result = unsafe { SetWindowRgn(self.hwnd, region, 1) };
+        if result == 0 {
+            // SAFETY: SetWindowRgn failed, so the region is still ours.
+            unsafe {
+                DeleteObject(region);
+            }
+        }
+    }
+
+    /// Repaints the handle after a style change.
+    pub fn invalidate(&self) {
+        // SAFETY: live HWND; a NULL rect invalidates the whole client area.
+        unsafe {
+            InvalidateRect(self.hwnd, std::ptr::null(), 0);
         }
     }
 

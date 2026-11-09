@@ -2,6 +2,7 @@
 
 mod bars;
 mod controls;
+pub mod i18n;
 pub mod icon;
 pub mod icons;
 mod input;
@@ -77,6 +78,12 @@ pub struct MuxApp {
     /// Picture pan/zoom (RV style), applied to every plane.
     pub(super) pan: (f64, f64),
     pub(super) zoom: f64,
+    /// Rail pill slide animation (fast off the mark, easing out).
+    pub(super) rail_pill: f32,
+    pub(super) rail_pill_from: f32,
+    pub(super) rail_pill_goal: f32,
+    pub(super) rail_pill_t0: Instant,
+    pub(super) rail_pill_ready: bool,
     /// Signature of the last applied view so pan/zoom/fit only re-sends on change.
     view_key: Option<(bool, i32, i32, u64, u64, u64, u8)>,
     /// Files to open on the first frame, when the native window already exists.
@@ -137,6 +144,11 @@ impl MuxApp {
             suppress_click: None,
             pan: (0.0, 0.0),
             zoom: 0.0,
+            rail_pill: 0.0,
+            rail_pill_from: 0.0,
+            rail_pill_goal: 0.0,
+            rail_pill_t0: Instant::now(),
+            rail_pill_ready: false,
             view_key: None,
             pending: Vec::new(),
             frame_dressed: false,
@@ -186,6 +198,37 @@ impl MuxApp {
 
     pub(super) fn duration(&self) -> f64 {
         self.active_player().map(|p| p.duration()).unwrap_or(0.0)
+    }
+
+    /// Active-language text; see [i18n].
+    pub(super) fn t(&self, zh: &'static str, en: &'static str) -> &'static str {
+        i18n::t(self.settings.lang, zh, en)
+    }
+
+    /// Eases the rail pill towards `goal` (cubic ease-out: quick start, gentle
+    /// landing — the curve the reference screenshot shows) and returns its
+    /// current centre y.
+    pub(super) fn animate_rail_pill(&mut self, goal: f32, ctx: &egui::Context) -> f32 {
+        const DURATION: f32 = 0.34;
+        if !self.rail_pill_ready {
+            self.rail_pill = goal;
+            self.rail_pill_goal = goal;
+            self.rail_pill_from = goal;
+            self.rail_pill_ready = true;
+            return goal;
+        }
+        if (self.rail_pill_goal - goal).abs() > 0.5 {
+            self.rail_pill_from = self.rail_pill;
+            self.rail_pill_goal = goal;
+            self.rail_pill_t0 = Instant::now();
+        }
+        let t = (self.rail_pill_t0.elapsed().as_secs_f32() / DURATION).clamp(0.0, 1.0);
+        let eased = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
+        self.rail_pill = self.rail_pill_from + (self.rail_pill_goal - self.rail_pill_from) * eased;
+        if t < 1.0 {
+            ctx.request_repaint();
+        }
+        self.rail_pill
     }
 
     /// Frame rate of whichever plane is loaded, for timecode and frame maths.
@@ -356,7 +399,10 @@ impl MuxApp {
     /// Adds files to the playlist and opens them on `target`.
     pub(super) fn open_path(&mut self, path: PathBuf, target: Target) {
         let Some(lib) = self.lib.clone() else {
-            self.toast = Some(Toast::error("libmpv 未加载，无法播放"));
+            self.toast = Some(Toast::error(self.t(
+                "libmpv 未加载，无法播放",
+                "libmpv is not loaded; cannot play",
+            )));
             return;
         };
 
@@ -405,11 +451,12 @@ impl MuxApp {
                     self.configure(player);
                 }
                 self.toast = Some(Toast::info(format!(
-                    "{} → {} 面",
+                    "{} → {} {}",
                     path.file_name()
                         .map(|n| n.to_string_lossy().to_string())
                         .unwrap_or_default(),
-                    if target == Target::B { "B" } else { "A" }
+                    if target == Target::B { "B" } else { "A" },
+                    self.t("面", "side")
                 )));
                 if target == Target::B {
                     // Align B with A and hold both on the same frame.
@@ -429,7 +476,10 @@ impl MuxApp {
                 }
             }
             Err(err) => {
-                self.toast = Some(Toast::error(format!("载入失败：{err:#}")));
+                self.toast = Some(Toast::error(format!(
+                    "{}{err:#}",
+                    self.t("载入失败：", "Load failed: ")
+                )));
             }
         }
     }
@@ -470,7 +520,11 @@ impl MuxApp {
                 }
                 MpvEvent::EndFile { reason } => {
                     if reason.contains("error") {
-                        self.toast = Some(Toast::error(format!("{plane} 面播放出错：{reason}")));
+                        self.toast = Some(Toast::error(format!(
+                            "{}{plane} {}{reason}",
+                            self.t("播放出错：", "Playback error: "),
+                            self.t("面：", "side: ")
+                        )));
                     }
                 }
                 MpvEvent::PropertyChanged { name, value } => {
@@ -645,6 +699,11 @@ impl MuxApp {
             self.stage_rect
         };
         let ppp = ctx.pixels_per_point();
+        // The wipe grip is a native window, so its colours come from here.
+        let bg = colour_to_rgb(self.palette.primary);
+        let fg = colour_to_rgb(self.palette.on_primary);
+        let vertical = self.settings.axis == SplitAxis::Horizontal;
+        self.media.sync_grip_style(bg, fg, vertical);
         let blink_b = self.settings.mode == CompareMode::Blink && self.blink_show_b();
         self.media.sync_layout(
             rect,
@@ -838,7 +897,10 @@ impl eframe::App for MuxApp {
                         ui.painter().text(
                             rect.center(),
                             egui::Align2::CENTER_CENTER,
-                            "没有载入视频 · 按 F 或 Esc 退出全屏",
+                            self.t(
+                                "没有载入视频 · 按 F 或 Esc 退出全屏",
+                                "No video loaded · press F or Esc to leave full screen",
+                            ),
                             egui::FontId::proportional(15.0),
                             Color32::from_gray(150),
                         );
@@ -929,3 +991,8 @@ impl MuxApp {
 
 #[allow(dead_code)]
 fn _unused(_: SplitAxis) {}
+
+/// Packs an egui colour into `0xRRGGBB` for the Win32 painting code.
+fn colour_to_rgb(color: egui::Color32) -> u32 {
+    ((color.r() as u32) << 16) | ((color.g() as u32) << 8) | color.b() as u32
+}

@@ -33,6 +33,10 @@ const MAX_DRIFT_SECS: f64 = 0.08;
 /// How often the drift check runs.
 const SYNC_INTERVAL: Duration = Duration::from_millis(250);
 
+/// How often the plane children (mpv's renderer window) are re-scanned for
+/// subclassing, so a recreated renderer cannot silently swallow the pointer.
+const HOOK_SCAN_INTERVAL: Duration = Duration::from_millis(400);
+
 /// Physical pixel rectangle.
 type PxRect = (i32, i32, i32, i32);
 
@@ -102,6 +106,11 @@ struct Surface {
     hwnd: i64,
     rect: PxRect,
     visible: bool,
+    /// Renderer windows libmpv created below `hwnd` (they get the pointer
+    /// messages, so they are subclassed and mapped back to this plane).
+    children: Vec<i64>,
+    /// Rounded-pill region radius; `> 0` for the wipe grip, `0` for planes.
+    round: i32,
 }
 
 impl Surface {
@@ -111,7 +120,29 @@ impl Surface {
             hwnd: 0,
             rect: (-1, -1, 0, 0),
             visible: false,
+            children: Vec::new(),
+            round: 0,
         }
+    }
+
+    /// Hooks any renderer window mpv created (or recreated) below this plane.
+    fn refresh_children(&mut self) {
+        if self.hwnd == 0 {
+            return;
+        }
+        for child in crate::video::child_windows(self.hwnd) {
+            if !self.children.contains(&child) {
+                crate::video::childwin::install_input_hook(child);
+                self.children.push(child);
+            }
+        }
+        // Drop handles the renderer destroyed so the list cannot grow forever.
+        self.children
+            .retain(|h| crate::video::childwin::is_window(*h));
+    }
+
+    fn owns(&self, hwnd: i64) -> bool {
+        hwnd != 0 && (self.hwnd == hwnd || self.children.contains(&hwnd))
     }
 
     fn ensure(&mut self, parent: i64, plane: Plane) -> anyhow::Result<i64> {
@@ -134,6 +165,9 @@ impl Surface {
         let rect = target.unwrap_or((0, 0, 0, 0));
         if self.rect != rect {
             win.set_rect(rect.0, rect.1, rect.2, rect.3);
+            if self.round > 0 {
+                win.round_corners(self.round);
+            }
             self.rect = rect;
         }
         if self.visible != visible {
@@ -159,6 +193,9 @@ pub(crate) struct Media {
     container_rect: PxRect,
     plane_a: Surface,
     plane_b: Surface,
+    /// Material drag handle for the wipe divider. It lives in the same native
+    /// layer as the planes so it stays visible above the video.
+    grip: Surface,
     planes_ready: bool,
 
     pub player_a: Option<MpvPlayer>,
@@ -172,6 +209,10 @@ pub(crate) struct Media {
     pub meta_b: Option<MediaInfo>,
 
     last_sync: Instant,
+    last_hook_scan: Instant,
+    /// Last colours pushed to the grip window, so a frame that changes nothing
+    /// does not repaint it.
+    grip_style: Option<(u32, u32, bool)>,
     pub drift: f64,
 }
 
@@ -182,6 +223,7 @@ impl Default for Media {
             container_rect: (-1, -1, 0, 0),
             plane_a: Surface::new(),
             plane_b: Surface::new(),
+            grip: Surface::new(),
             planes_ready: false,
             player_a: None,
             player_b: None,
@@ -190,6 +232,8 @@ impl Default for Media {
             meta_a: None,
             meta_b: None,
             last_sync: Instant::now(),
+            last_hook_scan: Instant::now() - HOOK_SCAN_INTERVAL,
+            grip_style: None,
             drift: 0.0,
         }
     }
@@ -215,7 +259,14 @@ impl Media {
             let ok = [Plane::A, Plane::B]
                 .into_iter()
                 .all(|plane| self.surface_mut(plane).ensure(stage, plane).is_ok());
-            self.planes_ready = ok;
+            self.grip.round = 9;
+            let grip_ok = ChildWindow::create_grip(stage, 0x4D56_0005, "muxvideo-grip")
+                .map(|win| {
+                    self.grip.hwnd = win.hwnd();
+                    self.grip.window = Some(win);
+                })
+                .is_ok();
+            self.planes_ready = ok && grip_ok;
         }
         self.planes_ready
     }
@@ -331,6 +382,7 @@ impl Media {
         if w < 8 || h < 8 || !any_video {
             self.plane_a.place(None);
             self.plane_b.place(None);
+            self.grip.place(None);
             return;
         }
 
@@ -343,6 +395,7 @@ impl Media {
         let mut b_rect: Option<PxRect> = None;
         let mut a_clip: Option<PxRect> = None;
         let mut b_clip: Option<PxRect> = None;
+        let mut grip_rect: Option<PxRect> = None;
 
         match mode {
             CompareMode::Single => {
@@ -379,9 +432,10 @@ impl Media {
                         let split = (wipe.clamp(0.0, 1.0)
                             * if axis == SplitAxis::Horizontal { w } else { h } as f32)
                             .round() as i32;
-                        // Leave a 3 px hole at the seam so the egui-painted
-                        // divider shows through (native planes sit above egui).
-                        const SEAM: i32 = 3;
+                        // Leave a hole at the seam so the egui-painted divider
+                        // and its drag handle show through (native planes sit
+                        // above egui, so the handle can only live in the gap).
+                        const SEAM: i32 = 10;
                         let before = (split - SEAM).max(0);
                         let after =
                             (split + SEAM).min(if axis == SplitAxis::Horizontal { w } else { h });
@@ -389,10 +443,17 @@ impl Media {
                             SplitAxis::Horizontal => {
                                 a_clip = Some((0, 0, before, h));
                                 b_clip = Some((after, 0, (w - after).max(0), h));
+                                // 18 x 56 pill centred on the seam.
+                                let cx = split - 9;
+                                let cy = (h - 56) / 2;
+                                grip_rect = Some((cx, cy.max(0), 18, 56.min(h)));
                             }
                             SplitAxis::Vertical => {
                                 a_clip = Some((0, 0, w, before));
                                 b_clip = Some((0, after, w, (h - after).max(0)));
+                                let cx = (w - 56) / 2;
+                                let cy = split - 9;
+                                grip_rect = Some((cx.max(0), cy, 56.min(w), 18));
                             }
                         }
                     }
@@ -423,6 +484,56 @@ impl Media {
         self.plane_b.place(b_rect);
         self.plane_a.clip(a_clip);
         self.plane_b.clip(b_clip);
+        self.grip.place(grip_rect);
+        if grip_rect.is_some()
+            && let Some(win) = &self.grip.window
+        {
+            // Draw the handle over the planes, never behind them.
+            win.bring_to_top();
+        }
+
+        // mpv creates (and on reloads recreates) its own renderer window below
+        // each plane; that window is what receives the pointer, so it has to be
+        // subclassed as well or dragging silently stops working.
+        self.refresh_input_hooks();
+    }
+
+    /// Subclasses the renderer windows mpv put below the planes.
+    ///
+    /// Cheap enough to run from the layout pass, but throttled so a 60 Hz
+    /// repaint does not enumerate the window tree every frame.
+    pub fn refresh_input_hooks(&mut self) {
+        if self.last_hook_scan.elapsed() < HOOK_SCAN_INTERVAL {
+            return;
+        }
+        self.last_hook_scan = Instant::now();
+        self.plane_a.refresh_children();
+        self.plane_b.refresh_children();
+    }
+
+    /// Handle of the wipe grip window (`0` before it exists).
+    pub fn grip_hwnd(&self) -> i64 {
+        self.grip.hwnd
+    }
+
+    /// Handle of plane A, used to normalise grip coordinates.
+    pub fn plane_a_hwnd(&self) -> i64 {
+        self.plane_a.hwnd
+    }
+
+    /// Pushes the palette colours into the native grip window.
+    ///
+    /// The handle is a real Win32 window (egui cannot paint above the video),
+    /// so its Material colours have to be forwarded by hand.
+    pub fn sync_grip_style(&mut self, bg: u32, fg: u32, vertical: bool) {
+        if self.grip_style == Some((bg, fg, vertical)) {
+            return;
+        }
+        self.grip_style = Some((bg, fg, vertical));
+        crate::video::childwin::set_grip_style(bg, fg, vertical);
+        if let Some(win) = &self.grip.window {
+            win.invalidate();
+        }
     }
 
     // ── events / sync ─────────────────────────────────────────────────────
@@ -491,7 +602,10 @@ impl Media {
     /// The stage container and the eframe toplevel also receive mouse messages
     /// (wheel events bubble up), so input is only accepted from a visible plane.
     pub fn plane_for_hwnd(&self, hwnd: i64) -> Option<Plane> {
-        let hit = |s: &Surface| s.visible && s.hwnd != 0 && s.hwnd == hwnd;
+        // `visible` is deliberately not required: resizing the stage (toggling
+        // the playlist, entering fullscreen) hides a plane for a frame or two,
+        // and dropping those events made dragging feel intermittent.
+        let hit = |s: &Surface| s.rect.2 > 0 && s.owns(hwnd);
         if hit(&self.plane_a) {
             Some(Plane::A)
         } else if hit(&self.plane_b) {

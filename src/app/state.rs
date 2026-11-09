@@ -22,41 +22,59 @@ pub enum CompareMode {
 impl CompareMode {
     pub const ALL: [Self; 4] = [Self::Single, Self::Pair, Self::Wipe, Self::Blink];
 
-    pub fn label(self) -> &'static str {
+    pub fn label(self, lang: Lang) -> &'static str {
         match self {
-            Self::Single => "单画面",
-            Self::Pair => "并排",
-            Self::Wipe => "划像",
-            Self::Blink => "闪烁",
+            Self::Single => super::i18n::t(lang, "单画面", "Single"),
+            Self::Pair => super::i18n::t(lang, "并排", "Side by side"),
+            Self::Wipe => super::i18n::t(lang, "划像", "Wipe"),
+            Self::Blink => super::i18n::t(lang, "闪烁", "Flicker"),
         }
     }
 
-    pub fn hint(self) -> &'static str {
+    pub fn hint(self, lang: Lang) -> &'static str {
         match self {
-            Self::Single => "只看 A 面，B 静音待命",
-            Self::Pair => "A / B 同帧并排，比构图与调色",
-            Self::Wipe => "两路叠在一起，拖画面分界逐处对照",
-            Self::Blink => "A / B 同位置快速切换，抖动即差异",
+            Self::Single => super::i18n::t(lang, "只看 A 面，B 静音待命", "A only; B stays muted"),
+            Self::Pair => super::i18n::t(
+                lang,
+                "A / B 同帧并排，比构图与调色",
+                "A and B side by side on the same frame",
+            ),
+            Self::Wipe => super::i18n::t(
+                lang,
+                "两路叠在一起，拖分界逐处对照",
+                "Overlaid; drag the divider to compare",
+            ),
+            Self::Blink => super::i18n::t(
+                lang,
+                "A / B 快速切换，抖动即差异",
+                "A/B alternate; any jump is a difference",
+            ),
         }
     }
 
-    /// Longer explanation used in tooltips on the compare bar.
-    pub fn about(self) -> &'static str {
+    /// Longer explanation shown on the settings page.
+    pub fn about(self, lang: Lang) -> &'static str {
         match self {
-            Self::Single => "只显示 A 面。切回单画面时 B 面会暂停解码，省性能。",
-            Self::Pair => {
-                "A / B 各占一半，同一时间点并排播放。适合对比两个版本的分辨率、\
-构图、调色、字幕位置。"
-            }
-            Self::Wipe => {
-                "A / B 画面完全重叠，只有分界线左侧显示 A、右侧显示 B。\
-直接用鼠标在画面上左右拖动分界线，就能逐处对照——比并排更容易看出细微位移。"
-            }
-            Self::Blink => {
-                "A / B 在同一个位置、同一时间点轮流显示，每秒切换几次。\
-人眼对「闪一下动了的地方」极其敏感，所以修图、磨皮、降噪、锐化这类改动，\
-闪烁比并排和划像都更容易看出来。"
-            }
+            Self::Single => super::i18n::t(
+                lang,
+                "只显示 A 面。切回单画面时 B 面会暂停解码，省性能。",
+                "Shows A only. B pauses decoding in this mode, which saves power.",
+            ),
+            Self::Pair => super::i18n::t(
+                lang,
+                "A / B 各占一半，同一时间点并排播放。适合对比两个版本的分辨率、构图、调色、字幕位置。",
+                "A and B each take half the stage and play the same instant. Good for resolution, framing, grading and subtitle position.",
+            ),
+            Self::Wipe => super::i18n::t(
+                lang,
+                "A / B 完全重叠，分界线左边是 A、右边是 B；直接拖画面上中间的把手即可逐处对照。",
+                "A and B overlap; A is left of the divider, B is right of it. Drag the grip in the middle to compare detail by detail.",
+            ),
+            Self::Blink => super::i18n::t(
+                lang,
+                "A / B 在同位置、同时间点轮流显示。人眼对「闪一下动了的地方」极敏感，修图、降噪、锐化的改动比并排更容易看出来。",
+                "A and B alternate in place. The eye is very sensitive to anything that jumps, which makes retouching, denoising or sharpening obvious.",
+            ),
         }
     }
 
@@ -77,10 +95,28 @@ pub enum SplitAxis {
 }
 
 impl SplitAxis {
+    pub fn label(self, lang: Lang) -> &'static str {
+        match self {
+            Self::Horizontal => super::i18n::t(lang, "左右", "Left / right"),
+            Self::Vertical => super::i18n::t(lang, "上下", "Top / bottom"),
+        }
+    }
+}
+
+/// UI language; every on-screen string carries both variants inline via
+/// [super::i18n::t].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Lang {
+    #[default]
+    Zh,
+    En,
+}
+
+impl Lang {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Horizontal => "左右",
-            Self::Vertical => "上下",
+            Self::Zh => "中文",
+            Self::En => "English",
         }
     }
 }
@@ -90,7 +126,6 @@ impl SplitAxis {
 pub enum RailTab {
     #[default]
     Viewer,
-    Compare,
     Settings,
 }
 
@@ -98,7 +133,6 @@ impl RailTab {
     pub fn label(self) -> &'static str {
         match self {
             Self::Viewer => "查看",
-            Self::Compare => "对比",
             Self::Settings => "设置",
         }
     }
@@ -151,6 +185,8 @@ pub struct Settings {
     pub scrub_ppf: f64,
     /// Crop the picture to fill the stage instead of letterboxing it.
     pub fill: bool,
+    /// UI language.
+    pub lang: Lang,
     /// Recently opened directory for the file picker.
     pub last_dir: String,
     /// Last files, restored as a playlist.
@@ -173,6 +209,7 @@ impl Default for Settings {
             muted: false,
             loop_file: false,
             show_playlist: true,
+            lang: Lang::Zh,
             hwdec: "auto-safe".into(),
             scrub_ppf: SCRUB_PPF_DEFAULT,
             fill: false,

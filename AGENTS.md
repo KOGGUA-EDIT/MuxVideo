@@ -28,7 +28,7 @@ cargo build --offline
 
 - 视频面 = Win32 子窗口：`root eframe hwnd → stage container(WS_CLIPCHILDREN) → plane A / B`，
   每个 plane 一个 libmpv 实例，用 `wid` 选项内嵌。
-- 对比模式：Single / Pair（左右|上下）/ Wipe（B 面 SetWindowRgn 裁剪）/ Blink（A/B 同位置
+- 对比模式：Single / Pair（左右|上下）/ Wipe（B 面 SetWindowRgn 裁剪，缝里有一个原生 grip 窗口当把手）/ Blink（A/B 同位置
   每 0.45s 轮流显示；`sync_layout` 的第 6 参 `blink_b` 决定此刻显示哪一路，停帧也要 30ms 重绘）。
 - **不要试图用 `lavfi-complex` 做两文件的逐像素差值**：`[vid1]/[vid2]` 是同一文件的第 1/2 条
   视频轨，传两个文件会报 `Pad vid2 is not connected to anything.`（已实测），单实例做不到。

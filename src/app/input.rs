@@ -33,6 +33,9 @@ const ZOOM_STEP: f64 = 0.10;
 const ZOOM_MIN: f64 = -2.0;
 const ZOOM_MAX: f64 = 3.0;
 
+/// How close (in pixels) the pointer must be to the wipe divider to grab it.
+const HANDLE_GRAB: f32 = 22.0;
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Mode {
     /// Left press that drags the playhead frame by frame (RV Player style).
@@ -63,6 +66,37 @@ pub(super) fn pump(app: &mut MuxApp, ctx: &egui::Context) {
         return;
     }
     for event in events {
+        // The wipe grip is its own native window: translate its coordinates
+        // into plane A so the seam drag maths stays the same.
+        let mapped = if app.media.plane_for_hwnd(event.hwnd).is_none()
+            && app.media.grip_hwnd() != 0
+            && event.hwnd == app.media.grip_hwnd()
+        {
+            match event.event {
+                MouseEvent::Down { x, y, button } => {
+                    crate::video::childwin::map_point(event.hwnd, app.media.plane_a_hwnd(), x, y)
+                        .map(|(x, y)| MouseEvent::Down { x, y, button })
+                }
+                MouseEvent::Up { x, y, button } => {
+                    crate::video::childwin::map_point(event.hwnd, app.media.plane_a_hwnd(), x, y)
+                        .map(|(x, y)| MouseEvent::Up { x, y, button })
+                }
+                MouseEvent::Move { x, y } => {
+                    crate::video::childwin::map_point(event.hwnd, app.media.plane_a_hwnd(), x, y)
+                        .map(|(x, y)| MouseEvent::Move { x, y })
+                }
+                other => Some(other),
+            }
+        } else {
+            None
+        };
+        let event = match mapped {
+            Some(inner) => crate::video::InputEvent {
+                hwnd: app.media.plane_a_hwnd(),
+                event: inner,
+            },
+            None => event,
+        };
         let Some(plane) = app.media.plane_for_hwnd(event.hwnd) else {
             // The stage container and the toplevel get the bubbled-up copies.
             continue;
@@ -84,7 +118,14 @@ pub(super) fn pump(app: &mut MuxApp, ctx: &egui::Context) {
 }
 
 fn press(app: &mut MuxApp, plane: Plane, x: i32, y: i32, button: u8) {
+    // A left press on the wipe handle grabs the divider; everywhere else the
+    // left button scrubs.
+    let on_handle = button == 0
+        && app.settings.mode == CompareMode::Wipe
+        && app.media.file_b.is_some()
+        && seam_near(app, plane, x, y);
     let mode = match button {
+        0 if on_handle => Mode::Wipe,
         0 => Mode::Scrub,
         1 if app.settings.mode == CompareMode::Wipe => Mode::Wipe,
         2 => Mode::Pan,
@@ -103,6 +144,22 @@ fn press(app: &mut MuxApp, plane: Plane, x: i32, y: i32, button: u8) {
         moved: false,
         began: Instant::now(),
     });
+}
+
+/// Whether the pointer is close enough to the wipe divider to grab it.
+fn seam_near(app: &MuxApp, plane: Plane, x: i32, y: i32) -> bool {
+    let Some((w, h)) = app.media.plane_size(plane) else {
+        return false;
+    };
+    let frac = app.settings.wipe.clamp(0.0, 1.0);
+    match app.settings.axis {
+        crate::app::state::SplitAxis::Horizontal => {
+            (f32::from(x as i16) - frac * w as f32).abs() <= HANDLE_GRAB
+        }
+        crate::app::state::SplitAxis::Vertical => {
+            (f32::from(y as i16) - frac * h as f32).abs() <= HANDLE_GRAB
+        }
+    }
 }
 
 /// Debug tap: enabled only when an `input-debug.flag` file sits next to the exe.
@@ -197,7 +254,8 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
                 app.media.seek_all(target);
                 let total = crate::app::state::frame_at(duration, fps);
                 app.toast = Some(crate::app::state::Toast::info(format!(
-                    "帧 {} / {}",
+                    "{} {} / {}",
+                    app.t("帧", "Frame"),
                     crate::app::state::frame_at(target, fps),
                     total
                 )));
@@ -208,9 +266,12 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
             let _ = plane;
         }
         Mode::Wipe => {
-            if let Some((w, _)) = app.media.plane_size(drag.plane) {
-                let frac = (x as f32 / w.max(1) as f32).clamp(0.02, 0.98);
-                app.settings.wipe = frac;
+            if let Some((w, h)) = app.media.plane_size(drag.plane) {
+                let frac = match app.settings.axis {
+                    crate::app::state::SplitAxis::Horizontal => x as f32 / w.max(1) as f32,
+                    crate::app::state::SplitAxis::Vertical => y as f32 / h.max(1) as f32,
+                };
+                app.settings.wipe = frac.clamp(0.02, 0.98);
                 app.settings_dirty = true;
             }
         }
@@ -255,7 +316,11 @@ fn wheel(app: &mut MuxApp, ctx: &egui::Context, delta: i32) {
     if ctrl {
         app.zoom = (app.zoom + notches * ZOOM_STEP).clamp(ZOOM_MIN, ZOOM_MAX);
         app.view_dirty();
-        app.toast = Some(Toast::info(format!("缩放 {:+.0}%", app.zoom * 100.0)));
+        app.toast = Some(Toast::info(format!(
+            "{} {:+.0}%",
+            app.t("缩放", "Zoom"),
+            app.zoom * 100.0
+        )));
         return;
     }
     let next = (app.settings.volume + notches * VOLUME_STEP).clamp(0.0, 130.0);
@@ -265,7 +330,11 @@ fn wheel(app: &mut MuxApp, ctx: &egui::Context, delta: i32) {
     app.settings.volume = next;
     app.settings.muted = false;
     app.apply_volume();
-    app.toast = Some(Toast::info(format!("音量 {:.0}%", next)));
+    app.toast = Some(Toast::info(format!(
+        "{} {:.0}%",
+        app.t("音量", "Volume"),
+        next
+    )));
 }
 
 fn toggle_fullscreen(app: &mut MuxApp, ctx: &egui::Context) {
@@ -283,17 +352,23 @@ pub(crate) fn reset_view(app: &mut MuxApp) {
 pub(crate) fn snapshot(app: &mut MuxApp) {
     use super::state::{Toast, file_stamp, frame_at, pictures_dir};
     let Some(player) = app.active_player() else {
-        app.toast = Some(Toast::error("没有可截图的画面"));
+        app.toast = Some(Toast::error(
+            app.t("没有可截图的画面", "Nothing to capture"),
+        ));
         return;
     };
     let frame = frame_at(app.time_pos(), app.fps());
     let dir = pictures_dir();
-    let name = format!("MuxVideo_{}_帧{frame:05}.png", file_stamp());
+    let name = format!(
+        "MuxVideo_{}_{}{frame:05}.png",
+        file_stamp(),
+        app.t("帧", "frame")
+    );
     let path = dir.join(&name);
     let path_str = path.to_string_lossy().to_string();
     if player.screenshot_to_file(&path_str) {
-        app.toast = Some(Toast::info(format!("已保存 {name}")));
+        app.toast = Some(Toast::info(format!("{}{name}", app.t("已保存 ", "Saved "))));
     } else {
-        app.toast = Some(Toast::error("截图失败"));
+        app.toast = Some(Toast::error(app.t("截图失败", "Screenshot failed")));
     }
 }
