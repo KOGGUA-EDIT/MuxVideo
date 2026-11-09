@@ -85,7 +85,7 @@ muxvideo.exe "D:\clipA.mp4" "D:\clipB.mp4"
 `libmpv-2.dll` 的查找顺序：环境变量 `MUXVIDEO_LIBMPV` → exe 同目录 → exe 同目录 `tools\mpv` →
 项目目录 `tools\mpv` → `D:\ruanjian\mpv\mpv.net-DW v2.1.0`。
 
-设置保存在 exe 同目录 `muxvideo.settings.json`（主题种子、模式、音量、最近列表等）。
+设置保存在 `%APPDATA%\MuxVideo\muxvideo.settings.json`（主题种子、模式、音量、最近列表、擦洗灵敏度等）。放在用户目录而不是 exe 旁边，是因为以前每个 exe 副本各有一份配置（装好的那份、`dist\` 里那份、临时目录那份），点了不同的快捷方式就会换一份配置，看起来像「设置自己掉回去了」。
 
 ## 构建
 

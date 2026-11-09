@@ -228,8 +228,11 @@ impl Settings {
             // v2: the scrub sensitivity default was wrong (20 px per frame made
             // dragging look broken on long clips); every older file gets the
             // responsive 1 px = 1 frame back.
-            // v3: the sensitivity is back in the UI, keyed off cfg_version so the
-            // stored value is only reset once instead of on every launch.
+            // v3/v4: the sensitivity is back in the UI, keyed off cfg_version so
+            // the stored value is only reset when the stored value came from a
+            // build where the slider was invisible (it drifted to 8-20 px/frame
+            // and made dragging feel dead). After this one reset the slider owns
+            // the value again.
             s.scrub_ppf = SCRUB_PPF_DEFAULT;
             s.cfg_version = CONFIG_VERSION;
             migrated = true;
@@ -395,7 +398,7 @@ pub const VIDEO_EXTS: &[&str] = &[
 pub const SCRUB_PPF_DEFAULT: f64 = 1.0;
 
 /// Bump when an older settings file needs a one-time fix-up in `Settings::load`.
-pub const CONFIG_VERSION: u32 = 3;
+pub const CONFIG_VERSION: u32 = 4;
 /// Hard bounds for the scrub sensitivity, matching the settings slider.
 pub const SCRUB_PPF_RANGE: std::ops::RangeInclusive<f64> = 1.0..=100.0;
 

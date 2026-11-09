@@ -437,7 +437,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
         );
         ui.add_space(10.0);
         ui.label(
-            egui::RichText::new("以下设置会自动保存到 muxvideo.settings.json")
+            egui::RichText::new("以下设置会自动保存到 %APPDATA%\\MuxVideo\\muxvideo.settings.json")
                 .size(11.5)
                 .color(p.on_surface_variant),
         );
