@@ -222,13 +222,12 @@ pub(super) fn titlebar(ui: &mut Ui, app: &mut MuxApp) {
                 ui.painter()
                     .rect_filled(sep_rect, CornerRadius::same(1), p.outline_variant);
                 ui.add_space(4.0);
-                let full = ui.ctx().input(|i| i.viewport().fullscreen.unwrap_or(false));
+                let full = app.immersive();
                 if icon_button(ui, &p, 38.0, full, icons::fullscreen)
-                    .on_hover_text("全屏（F）")
+                    .on_hover_text("全屏画面（F）")
                     .clicked()
                 {
-                    ui.ctx()
-                        .send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
+                    app.toggle_immersive(ui.ctx());
                 }
                 let settings_active = app.rail == RailTab::Settings;
                 if icon_button(ui, &p, 38.0, settings_active, icons::settings).clicked() {

@@ -15,6 +15,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
+use egui::Color32;
 
 use crate::mpv::{LibMpv, MpvEvent, MpvOptions};
 use crate::ui::Palette;
@@ -27,7 +28,7 @@ pub(super) const TITLEBAR_H: f32 = 56.0;
 /// Width of the navigation rail.
 pub(super) const RAIL_W: f32 = 88.0;
 /// Height of the transport panel.
-pub(super) const TRANSPORT_H: f32 = 112.0;
+pub(super) const TRANSPORT_H: f32 = 128.0;
 /// Width of the playlist side panel.
 pub(super) const PLAYLIST_W: f32 = 328.0;
 /// How long flicker comparison holds one input before switching (seconds).
@@ -81,6 +82,8 @@ pub struct MuxApp {
     frame_dressed: bool,
     /// Start of the flicker clock (CompareMode::Blink).
     blink_clock: Instant,
+    /// Immersive playback: chrome hidden, picture owns the window.
+    immersive: bool,
 }
 
 impl MuxApp {
@@ -134,6 +137,7 @@ impl MuxApp {
             pending: Vec::new(),
             frame_dressed: false,
             blink_clock: Instant::now(),
+            immersive: false,
         };
         app.palette = Palette::from_seed(app.settings.seed_color(), app.settings.scheme());
         crate::ui::install_style(&cc.egui_ctx, &app.palette);
@@ -486,6 +490,29 @@ impl MuxApp {
 
     // ── keyboard ──────────────────────────────────────────────────────────
 
+    /// True while the video alone owns the window: no titlebar, rail,
+    /// transport or playlist — just the picture, edge to edge.
+    pub(super) fn immersive(&self) -> bool {
+        self.immersive
+    }
+
+    /// Enter or leave immersive playback. The window itself also goes
+    /// fullscreen so the picture reaches the screen edges.
+    pub(super) fn set_immersive(&mut self, ctx: &egui::Context, on: bool) {
+        if self.immersive == on {
+            return;
+        }
+        self.immersive = on;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
+        ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
+        ctx.request_repaint();
+    }
+
+    pub(super) fn toggle_immersive(&mut self, ctx: &egui::Context) {
+        let on = !self.immersive;
+        self.set_immersive(ctx, on);
+    }
+
     fn handle_keys(&mut self, ctx: &egui::Context) {
         use egui::Key;
 
@@ -550,11 +577,10 @@ impl MuxApp {
             self.settings_dirty = true;
         }
         if pressed(Key::F) {
-            let full = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
+            self.toggle_immersive(ctx);
         }
         if pressed(Key::Escape) {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(false));
+            self.set_immersive(ctx, false);
         }
         if pressed(Key::OpenBracket) {
             self.settings.wipe = (self.settings.wipe - 0.02).clamp(0.0, 1.0);
@@ -596,7 +622,7 @@ impl MuxApp {
     }
 
     fn sync_stage(&mut self, ctx: &egui::Context) {
-        let hidden = self.rail == RailTab::Settings;
+        let hidden = self.rail == RailTab::Settings && !self.immersive;
         let rect = if hidden || !self.stage_reported {
             egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::ZERO)
         } else {
@@ -739,7 +765,9 @@ impl MuxApp {
 impl eframe::App for MuxApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frame_no += 1;
-        self.resize_borders(ctx);
+        if !self.immersive {
+            self.resize_borders(ctx);
+        }
 
         // Command-line files open on the first frame, once the native window exists.
         let pending = std::mem::take(&mut self.pending);
@@ -779,6 +807,36 @@ impl eframe::App for MuxApp {
 
         let palette = self.palette.clone();
         let surface = palette.surface;
+
+        if self.immersive {
+            // Immersive: the picture alone fills the window, no chrome at all.
+            egui::CentralPanel::default()
+                .frame(egui::Frame::NONE.fill(Color32::BLACK))
+                .show(ctx, |ui| {
+                    let rect = ui.max_rect();
+                    ui.painter().rect_filled(rect, 0.0, Color32::BLACK);
+                    self.stage_rect = rect;
+                    self.stage_reported = true;
+                    let has_video = self.has_video();
+                    if !has_video {
+                        ui.painter().text(
+                            rect.center(),
+                            egui::Align2::CENTER_CENTER,
+                            "没有载入视频 · 按 F 或 Esc 退出全屏",
+                            egui::FontId::proportional(15.0),
+                            Color32::from_gray(150),
+                        );
+                    }
+                });
+            self.sync_stage(ctx);
+            self.maybe_save();
+            ctx.request_repaint_after(if self.is_playing() {
+                Duration::from_millis(16)
+            } else {
+                Duration::from_millis(100)
+            });
+            return;
+        }
 
         egui::TopBottomPanel::top("titlebar")
             .exact_height(TITLEBAR_H)

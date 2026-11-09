@@ -593,7 +593,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     ui.label(
-                        egui::RichText::new("擦洗灵敏度")
+                        egui::RichText::new("Shift 细调精度")
                             .size(12.5)
                             .color(p.on_surface_variant),
                     );
@@ -611,10 +611,13 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                         app.settings_dirty = true;
                     }
                     ui.label(
-                        egui::RichText::new(format!("{:.0} px / 帧", app.settings.scrub_ppf))
-                            .size(11.5)
-                            .monospace()
-                            .color(p.on_surface_variant),
+                        egui::RichText::new(format!(
+                            "{:.0} px / 帧（按住 Shift 拖动）",
+                            app.settings.scrub_ppf
+                        ))
+                        .size(11.5)
+                        .monospace()
+                        .color(p.on_surface_variant),
                     );
                 });
             });
@@ -630,7 +633,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                     .show(ui, |ui| {
                         for (keys, what) in [
                             ("空格", "播放 / 暂停"),
-                            ("画面左键拖动", "逐帧擦洗，左退右进"),
+                            ("画面左键拖动", "擦洗：整条预览宽 = 整段片子"),
                             ("画面中键拖动", "平移画面"),
                             ("滚轮 / Ctrl+滚轮", "音量 / 缩放"),
                             ("画面双击", "全屏"),

@@ -104,7 +104,7 @@ fn press(app: &mut MuxApp, plane: Plane, x: i32, y: i32, button: u8) {
     });
 }
 
-fn drag_to(app: &mut MuxApp, _ctx: &egui::Context, x: i32, y: i32) {
+fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
     let fps = app.fps();
     let duration = app.duration();
     // Park playback before borrowing the gesture: a plain click never reaches
@@ -132,23 +132,35 @@ fn drag_to(app: &mut MuxApp, _ctx: &egui::Context, x: i32, y: i32) {
     }
     match drag.mode {
         Mode::Scrub => {
-            // Travel per frame is user configurable (1 … 100 px).
+            // Dragging across the whole preview covers the whole clip, so a
+            // short drag always shows something. Holding Shift switches to
+            // frame-by-frame precision (px per frame from the settings page).
+            let plane = drag.plane;
+            let frame0 = drag.frame0;
+            let last_target = drag.last_target;
             let ppf = app.settings.scrub_ppf.clamp(
                 *super::state::SCRUB_PPF_RANGE.start(),
                 *super::state::SCRUB_PPF_RANGE.end(),
             );
-            let frames = f64::from(tx) / ppf.max(0.01);
-            let mut target = drag.frame0 + frames / fps;
+            let frames = if ctx.input(|i| i.modifiers.shift) {
+                f64::from(tx) / ppf.max(0.01)
+            } else if let (Some((w, _)), true) = (app.media.plane_size(plane), duration > 0.0) {
+                let total_frames = duration * fps;
+                if w > 1 && total_frames > 0.0 {
+                    f64::from(tx) * total_frames / f64::from(w)
+                } else {
+                    f64::from(tx) / ppf.max(0.01)
+                }
+            } else {
+                f64::from(tx) / ppf.max(0.01)
+            };
+            let mut target = frame0 + frames / fps;
             if duration > 0.0 {
                 target = target.clamp(0.0, duration);
             } else {
                 target = target.max(0.0);
             }
-            // Re-issuing a seek every mouse move starves the decoder; once per
-            // half frame is plenty for the eye and cheap for mpv.
-            if (target - drag.last_target).abs() >= 0.5 / fps {
-                drag.last_target = target;
-                let target = target;
+            if (target - last_target).abs() >= 0.25 / fps {
                 app.scrub = Some(target);
                 app.media.seek_all(target);
                 let total = crate::app::state::frame_at(duration, fps);
@@ -157,6 +169,9 @@ fn drag_to(app: &mut MuxApp, _ctx: &egui::Context, x: i32, y: i32) {
                     crate::app::state::frame_at(target, fps),
                     total
                 )));
+                if let Some(drag) = app.gesture.as_mut() {
+                    drag.last_target = target;
+                }
             }
         }
         Mode::Wipe => {
@@ -221,9 +236,7 @@ fn wheel(app: &mut MuxApp, ctx: &egui::Context, delta: i32) {
 }
 
 fn toggle_fullscreen(app: &mut MuxApp, ctx: &egui::Context) {
-    let _ = app;
-    let full = ctx.input(|i| i.viewport().fullscreen.unwrap_or(false));
-    ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(!full));
+    app.toggle_immersive(ctx);
 }
 
 /// Resets pan/zoom; also reachable from the 0 key.
