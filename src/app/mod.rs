@@ -2,6 +2,7 @@
 
 mod bars;
 mod controls;
+pub mod icon;
 pub mod icons;
 mod input;
 mod open_dialog;
@@ -47,6 +48,8 @@ pub struct MuxApp {
     pub(super) palette: Palette,
     pub(super) settings: Settings,
     pub(super) rail: RailTab,
+    /// Title-bar brand texture, created on first paint.
+    pub(super) brand: Option<egui::TextureHandle>,
     pub(super) lib: Option<Arc<LibMpv>>,
     pub(super) boot_error: Option<String>,
 
@@ -116,6 +119,7 @@ impl MuxApp {
             palette,
             settings,
             rail: RailTab::Viewer,
+            brand: None,
             lib,
             boot_error,
             media: stage::Media::default(),
@@ -503,6 +507,14 @@ impl MuxApp {
             return;
         }
         self.immersive = on;
+        // Borderless fullscreen still leaves the taskbar on top for windows that
+        // are not topmost, which shows as a strip along the bottom edge; keep
+        // the picture window above it while the chrome is hidden.
+        ctx.send_viewport_cmd(egui::ViewportCommand::WindowLevel(if on {
+            egui::WindowLevel::AlwaysOnTop
+        } else {
+            egui::WindowLevel::Normal
+        }));
         ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
         ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
         ctx.request_repaint();
@@ -625,6 +637,10 @@ impl MuxApp {
         let hidden = self.rail == RailTab::Settings && !self.immersive;
         let rect = if hidden || !self.stage_reported {
             egui::Rect::from_min_size(egui::Pos2::ZERO, egui::Vec2::ZERO)
+        } else if self.immersive {
+            // Over-cover by a pixel so fractional DPI scaling can never leave a
+            // hairline of desktop along the screen edge.
+            self.stage_rect.expand(1.0)
         } else {
             self.stage_rect
         };

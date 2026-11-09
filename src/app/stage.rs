@@ -308,10 +308,14 @@ impl Media {
             return;
         };
 
+        // Round the far edges (not the size) so a fractional DPI scale cannot
+        // leave a one-pixel seam on the right/bottom of the picture.
         let x = (stage.min.x * ppp).round() as i32;
         let y = (stage.min.y * ppp).round() as i32;
-        let w = ((stage.width() * ppp).round() as i32).max(0);
-        let h = ((stage.height() * ppp).round() as i32).max(0);
+        let x1 = (stage.max.x * ppp).round() as i32;
+        let y1 = (stage.max.y * ppp).round() as i32;
+        let w = (x1 - x).max(0);
+        let h = (y1 - y).max(0);
         let rect = (x, y, w, h);
         let any_video = self.player_a.is_some() || self.player_b.is_some();
         // No media yet: shrink the native box away so the egui empty state shows.

@@ -1,6 +1,6 @@
 [package]
 name = "muxvideo"
-version = "0.1.10"
+version = "0.1.11"
 edition = "2024"
 rust-version = "1.88"
 description = "MuxVideo — a Material You video comparison and viewer built on mpv"
@@ -30,6 +30,7 @@ eframe = { version = "=0.33.3", default-features = false, features = [
     "glow",
 ] }
 libloading = "0.8"
+png = "0.18"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 windows-sys = { version = "0.61", features = [

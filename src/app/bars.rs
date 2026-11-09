@@ -162,16 +162,36 @@ pub(super) fn titlebar(ui: &mut Ui, app: &mut MuxApp) {
             .max_rect(inner)
             .layout(Layout::left_to_right(Align::Center)),
         |ui| {
-            // Brand mark.
+            // Brand mark: the artwork from 图标.svg, rounded to the same radius
+            // the Material rail uses.
             let (logo_rect, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
-            ui.painter()
-                .rect_filled(logo_rect, CornerRadius::same(9), p.primary_container);
-            let mut child = ui.new_child(
-                UiBuilder::new()
-                    .max_rect(logo_rect)
-                    .layout(Layout::centered_and_justified(egui::Direction::LeftToRight)),
-            );
-            icons::play(&mut child, 16.0, p.on_primary_container);
+            let radius = CornerRadius::same(9);
+            if app.brand.is_none() {
+                app.brand = super::icon::brand_texture(ui.ctx());
+            }
+            match &app.brand {
+                Some(tex) => {
+                    let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
+                    ui.painter()
+                        .add(egui::Shape::image(tex.id(), logo_rect, uv, Color32::WHITE));
+                    ui.painter().rect_stroke(
+                        logo_rect,
+                        radius,
+                        Stroke::new(1.0_f32, p.outline_variant),
+                        StrokeKind::Inside,
+                    );
+                }
+                None => {
+                    ui.painter()
+                        .rect_filled(logo_rect, radius, p.primary_container);
+                    let mut child = ui.new_child(
+                        UiBuilder::new()
+                            .max_rect(logo_rect)
+                            .layout(Layout::centered_and_justified(egui::Direction::LeftToRight)),
+                    );
+                    icons::play(&mut child, 16.0, p.on_primary_container);
+                }
+            }
 
             ui.add_space(10.0);
             ui.label(
