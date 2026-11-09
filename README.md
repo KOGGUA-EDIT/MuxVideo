@@ -58,12 +58,49 @@ cargo build --offline --release
 `dist\` 里是可运行的最小集合，拷走整个目录即可运行：
 
 ```
-dist/muxvideo.exe       # release 构建，windows 子系统，无控制台窗口
+dist/muxvideo.exe       # release 构建，windows 子系统，无控制台窗口（本地证书签名）
 dist/libmpv-2.dll       # libmpv 0.39（mpv.net-DW 发行版提供的 DLL）
 dist/README.txt         # 运行说明
 ```
 
 `dist` 缺 `libmpv-2.dll` 时按上面的查找顺序兜底找本机 mpv 安装。
+
+### 安装在 D:\ruanjian\MuxVideo 并部署
+
+```powershell
+pwsh -NoProfile -ExecutionPolicy Bypass -File tools\deploy.ps1            # 构建 + 签名 + 安装
+pwsh -NoProfile -ExecutionPolicy Bypass -File tools\deploy.ps1 -SkipBuild # 只重装现有产物
+```
+
+脚本会：构建 release → 复制到 `dist\` 并签名 → 安装到 `D:\ruanjian\MuxVideo\` →
+把 exe/dll 的完整性级别从 Low 改回 Medium（需要时静默提权）。
+
+## 双击弹 SmartScreen 的原因（重要）
+
+DSH 的工作区目录（这里是 `D:\app edit\Muxvideo`）带 **Low Mandatory Level** 完整性标签，
+在里面构建/复制的 exe 会继承 **Low 完整性**。Windows 会把 Low 完整性的可执行文件当作
+“来自 Internet 的文件”，双击时弹 `Microsoft Defender SmartScreen 阻止了无法识别的应用启动`
+或 `打开文件 - 安全警告：无法验证发布者`。
+
+证据：`icacls` 显示工作区目录有 `Mandatory Label\Low Mandatory Level:(OI)(CI)(NW)`，
+`dist\muxvideo.exe` 也是 `Low Mandatory Level`；同样字节的 exe 拷到 `D:\ruanjian\MuxVideo\`
+或 `D:\app edit\mv4\`（无完整性标签 = Medium）双击就直接启动。
+
+处理办法（三种，任选）：
+
+1. **拷出工作区再运行**（推荐）：`tools\deploy.ps1` 会装到 `D:\ruanjian\MuxVideo\`，
+   桌面快捷方式也指向那里。
+2. **给产物改完整性级别**：管理员执行
+   `icacls "dist\muxvideo.exe" /setintegritylevel Medium`（dll 同理）。
+   注意每次重新构建都会继承回 Low，要再来一次。
+3. 本地代码签名证书（`CN=MuxVideo Local Dev`，thumbprint
+   `74CE54AFE8D9636E8635A7294D129390DA7877F6`，公钥在 `dist\MuxVideo-LocalDev.cer`，
+   已装入当前用户 Root + TrustedPublisher）只让对话框显示发布者名，**不能**单独消除弹窗 ——
+   根因是完整性级别，不是签名。
+
+不要试图把工作区目录本身改成 Medium：DSH 沙箱靠 Low 完整性做写限制（no-write-up），
+改高会让沙箱写工作区失败。
+
 
 ## 结构
 

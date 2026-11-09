@@ -1,0 +1,20 @@
+[
+  {
+    "Path": "HKLM:\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\AppHost",
+    "Name": "EnableWebContentEvaluation",
+    "Existed": true,
+    "Value": 1
+  },
+  {
+    "Path": "HKLM:\\SOFTWARE\\WOW6432Node\\Microsoft\\Windows\\CurrentVersion\\AppHost",
+    "Name": "EnableWebContentEvaluation",
+    "Existed": true,
+    "Value": 1
+  },
+  {
+    "Path": "HKCU:\\Software\\Microsoft\\Windows\\CurrentVersion\\AppHost",
+    "Name": "EnableWebContentEvaluation",
+    "Existed": true,
+    "Value": 0
+  }
+]

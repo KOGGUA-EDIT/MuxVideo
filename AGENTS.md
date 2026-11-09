@@ -52,4 +52,23 @@ cargo build --offline
 ## 交付
 
 - `dist\` = 可运行最小集：`muxvideo.exe` + `libmpv-2.dll` + `README.txt`（不进 git，见 `.gitignore`）。
-- 重新发布：`cargo build --offline --release` 后把 `target\release\muxvideo.exe` 和 `tools\mpv\libmpv-2.dll` 拷到 `dist\`。
+- 重新发布：`pwsh -NoProfile -ExecutionPolicy Bypass -File tools\deploy.ps1`
+  （构建 → 签名 → 安装到 `D:\ruanjian\MuxVideo\` → 把完整性级别改回 Medium）。
+
+### 工作区 Low 完整性坑（必读）
+
+工作区目录带 `Mandatory Label\Low Mandatory Level:(OI)(CI)(NW)`，里面新建/构建出来的
+exe 会继承 **Low 完整性**。Windows 把 Low 完整性的可执行文件当成“来自 Internet 的文件”，
+双击会弹 `Windows 已保护你的电脑`（SmartScreen）或 `打开文件 - 安全警告`。
+
+- 症状：拷到 `dist\` 的 exe 双击必弹窗，同样的 exe 拷到工作区外（如 `D:\ruanjian\MuxVideo\`）
+  就直接启动。`icacls <file>` 最后一行的 `Mandatory Label` 可确认。
+- 修复：`icacls <file> /setintegritylevel Medium`（要管理员，因为要 SeRelabelPrivilege），
+  或者干脆拷出工作区。
+- **不要**把工作区目录本身改成 Medium：DSH 沙箱靠 Low 完整性做 no-write-up 限制，改高会让
+  沙箱写工作区失败。
+- 本地签名证书（`CN=MuxVideo Local Dev`）只影响对话框里显示的发布者名，不能消除弹窗；
+  排查时不要被签名状态误导。
+- 相关脚本：`tools\set_integrity_medium.ps1`（单次改级别）、`tools\deploy.ps1`（完整发布）。
+  历史上为排查改过的 SmartScreen 注册表已全部还原（AppHost 三处 1/1/0，无 Policy 覆盖），
+  还原脚本 `tools\restore_smartscreen_all.ps1`。
