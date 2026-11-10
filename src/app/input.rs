@@ -204,7 +204,7 @@ fn debug_log(event: &crate::video::InputEvent) {
 }
 
 fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
-    let fps = app.fps();
+    let fps = crate::app::state::safe_fps(app.fps());
     let duration = app.duration();
     // Park playback before borrowing the gesture: a plain click never reaches
     // this point, so play/pause keeps its meaning.

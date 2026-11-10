@@ -262,13 +262,24 @@ impl MuxApp {
     }
 
     /// Frame rate of whichever plane is loaded, for timecode and frame maths.
+    ///
+    /// Some containers carry no frame rate at all (`帧率 —` in the info panel).
+    /// A zero here used to divide by zero in the scrub maths and clamp every
+    /// drag step to the end of the file, which looked like "dragging does
+    /// nothing" on exactly those files.
     pub(super) fn fps(&self) -> f64 {
-        self.media
+        let raw = self
+            .media
             .meta_a
             .as_ref()
             .or(self.media.meta_b.as_ref())
             .map(|m| m.fps)
-            .unwrap_or(30.0)
+            .unwrap_or(0.0);
+        if raw.is_finite() && (1.0..=1000.0).contains(&raw) {
+            raw
+        } else {
+            30.0
+        }
     }
 
     /// Forces the next `sync_fit` to re-apply pan/zoom/fill.
