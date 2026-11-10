@@ -317,7 +317,18 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
                     }
                 } else {
                     let issue = drag.pending_target.unwrap_or(target);
-                    app.media.seek_all_fast(issue);
+                    // 4K: keyframe seeks only, so mpv is not asked to decode a
+                    // hundred long-GOP frames per second. Everything smaller:
+                    // an exact seek per move, because keyframe seeking only
+                    // lands on GOP boundaries — a clip with one keyframe every
+                    // 8 s looked frozen while dragging, which is the "scrubbing
+                    // is very laggy" report.
+                    if app.media.max_height() >= 1800 {
+                        app.media.seek_all_fast(issue);
+                    } else {
+                        app.media.seek_all(issue);
+                    }
+                    app.perf_seeks += 1;
                     crate::diag_verbose!(
                         "[scrub] seek target={issue:.3} from={frame0:.3} tx={tx} dur={duration:.3}"
                     );

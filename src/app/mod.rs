@@ -75,6 +75,10 @@ pub struct MuxApp {
 
     /// Scrub position while the progress slider is being dragged.
     pub(super) scrub: Option<f64>,
+    /// Frame/seek counters for the once-per-second `[perf]` line.
+    pub(super) perf_frames: u32,
+    pub(super) perf_seeks: u32,
+    perf_since: Instant,
     /// Gesture in progress on a native video surface.
     pub(super) gesture: Option<input::Drag>,
     /// Set after a double click so its trailing press is not read as a click.
@@ -159,6 +163,9 @@ impl MuxApp {
             settings_dirty: false,
             last_save: Instant::now(),
             scrub: None,
+            perf_frames: 0,
+            perf_seeks: 0,
+            perf_since: Instant::now(),
             gesture: None,
             pan: (0.0, 0.0),
             zoom: 0.0,
@@ -290,6 +297,26 @@ impl MuxApp {
     pub(super) fn time_pos(&self) -> f64 {
         self.scrub
             .unwrap_or_else(|| self.active_player().map(|p| p.time_pos()).unwrap_or(0.0))
+    }
+
+    /// Once a second, record how many frames were drawn and how many seeks were
+    /// issued. This is the only way to tell "the UI is slow" apart from "mpv is
+    /// slow to deliver the frame" on someone else's machine.
+    pub(super) fn perf_tick(&mut self) {
+        self.perf_frames += 1;
+        if self.perf_since.elapsed() < std::time::Duration::from_secs(1) {
+            return;
+        }
+        let scrubbing = self.gesture.is_some();
+        crate::diag!(
+            "[perf] fps={} seeks={} scrub={scrubbing} height={}",
+            self.perf_frames,
+            self.perf_seeks,
+            self.media.max_height()
+        );
+        self.perf_frames = 0;
+        self.perf_seeks = 0;
+        self.perf_since = Instant::now();
     }
 
     pub(super) fn is_playing(&self) -> bool {
@@ -1056,6 +1083,7 @@ const MIN_WINDOW_H: i32 = 400;
 impl eframe::App for MuxApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frame_no += 1;
+        self.perf_tick();
         if !self.immersive {
             self.resize_borders(ctx);
             self.pump_window_move(ctx);

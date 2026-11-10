@@ -787,7 +787,16 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
             };
             // While scrubbing, report the dragged position instead of the
             // decoder's, so the time label tracks the thumb without jitter.
-            app.scrub = if resp.dragging { target } else { None };
+            //
+            // This must not stomp on a picture drag: `input` owns `scrub` there,
+            // and clearing it every frame made the bar and the time label flip
+            // between the drag target and the decoder position — the "seek bar
+            // jumps while I scrub" report.
+            if resp.dragging {
+                app.scrub = target;
+            } else if app.gesture.is_none() {
+                app.scrub = None;
+            }
             if resp.changed
                 && let Some(pos) = target
             {
