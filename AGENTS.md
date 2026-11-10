@@ -86,6 +86,9 @@ exe 会继承 **Low 完整性**。Windows 把 Low 完整性的可执行文件当
 
 ## 设计参考
 
-- UI 一律按 Material 3 / M3 Expressive（~/.dsh/skills/material-design-3-ui 已装同名 skill，可直接加载）；改配色、组件、动效前先对照 eferences/m3-expressive.md 与 eferences/motion.md。
-- 线性波浪进度条参数：轨道 6px、波长 28px、振幅 4px、1 波长/秒、活动段与轨道间隙 6px、末端停止点 4px（见 src/ui/wavy.rs 顶部常量）。
-
+- UI 一律按 Material 3 / M3 Expressive。本机已装同名 skill：`~/.dsh/skills/material-design-3-ui`
+  （`SKILL.md` + `references/`），改配色、组件、动效前先加载它，需要细节时再读
+  `references/m3-expressive.md`、`references/motion.md`、`references/accessibility.md`。
+- 线性波浪进度条参数：轨道 6px、波长 28px、振幅 4px、1 波长/秒、活动段与剩余轨道间隙 6px、
+  末端停止点 4px、两端圆角（见 `src/ui/wavy.rs` 顶部常量，对应 M3 linear wavy indicator 的
+  4dp 描边 / 3.5dp 振幅 / 28dp 波长 / 4dp gap / 4dp stop indicator）。
