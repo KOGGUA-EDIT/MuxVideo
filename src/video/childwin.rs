@@ -21,11 +21,11 @@ use windows_sys::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLACK_BRUSH, BeginPaint, ClientToScreen, CombineRgn,
-    CreatePen, CreateRectRgn, CreateRoundRectRgn, CreateSolidBrush, DIB_RGB_COLORS, DeleteObject,
-    EndPaint, FillRect, GetDC, GetStockObject, InvalidateRect, LineTo, MoveToEx, PAINTSTRUCT,
-    RGN_OR, ReleaseDC, SRCCOPY, ScreenToClient, SelectObject, SetWindowRgn, StretchDIBits,
-    ValidateRect,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLACK_BRUSH, BeginPaint, BitBlt, ClientToScreen,
+    CombineRgn, CreateCompatibleBitmap, CreateCompatibleDC, CreatePen, CreateRectRgn,
+    CreateRoundRectRgn, CreateSolidBrush, DIB_RGB_COLORS, DeleteDC, DeleteObject, EndPaint,
+    FillRect, GetDC, GetStockObject, InvalidateRect, LineTo, MoveToEx, PAINTSTRUCT, RGN_OR,
+    ReleaseDC, SRCCOPY, ScreenToClient, SelectObject, SetWindowRgn, StretchDIBits, ValidateRect,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
@@ -65,6 +65,9 @@ pub struct PreviewFrame {
     pub bgra: std::sync::Arc<Vec<u8>>,
 }
 
+/// Whether the preview window should cover (fill) or letterbox the frame.
+static PREVIEW_FILL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Frame currently attached to each preview window.
 fn preview_frames()
 -> &'static std::sync::Mutex<std::collections::HashMap<i64, std::sync::Arc<PreviewFrame>>> {
@@ -88,6 +91,14 @@ pub fn clear_preview_frame(hwnd: i64) {
     if let Ok(mut frames) = preview_frames().lock() {
         frames.remove(&hwnd);
     }
+}
+
+/// Whether the preview should fill the surface (cover) instead of letterboxing.
+///
+/// The overlay has to agree with the `适应 / 填充` toggle, otherwise the picture
+/// changes shape the moment the gesture ends.
+pub fn set_preview_fill(fill: bool) {
+    PREVIEW_FILL.store(fill, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Paints a preview window: stretches the cached frame over the whole client
@@ -115,6 +126,30 @@ unsafe extern "system" fn preview_wndproc(
                     .lock()
                     .ok()
                     .and_then(|frames| frames.get(&(hwnd as i64)).cloned());
+                // Draw into an offscreen bitmap and blit once: painting straight
+                // into the window DC shows the clear-then-draw sequence as a
+                // flash on every drag step.
+                let mem = if width > 0 && height > 0 {
+                    // SAFETY: compatible DC/bitmap for the window DC we own.
+                    unsafe {
+                        let mem = CreateCompatibleDC(dc);
+                        if mem.is_null() {
+                            None
+                        } else {
+                            let bitmap = CreateCompatibleBitmap(dc, width, height);
+                            if bitmap.is_null() {
+                                DeleteDC(mem);
+                                None
+                            } else {
+                                let old = SelectObject(mem, bitmap as _);
+                                Some((mem, bitmap, old))
+                            }
+                        }
+                    }
+                } else {
+                    None
+                };
+                let target = mem.map(|(mem, _, _)| mem).unwrap_or(dc);
                 // SAFETY: brushes and DIBs are created and released in this
                 // scope; the DC is valid until EndPaint.
                 unsafe {
@@ -133,12 +168,34 @@ unsafe extern "system" fn preview_wndproc(
                                 },
                                 ..BITMAPINFO::default()
                             };
+                            // Letterbox instead of stretching: a stretched
+                            // preview changes shape the moment the gesture ends
+                            // and reads as a jump. `填充` switches to cover.
+                            let frame_w = i64::from(frame.width.max(1));
+                            let frame_h = i64::from(frame.height.max(1));
+                            let box_w = i64::from(width);
+                            let box_h = i64::from(height);
+                            let fill = PREVIEW_FILL.load(std::sync::atomic::Ordering::Relaxed);
+                            let (fit_w, fit_h) = if fill {
+                                if box_w * frame_h >= box_h * frame_w {
+                                    (box_w, (box_w * frame_h / frame_w).max(1))
+                                } else {
+                                    ((box_h * frame_w / frame_h).max(1), box_h)
+                                }
+                            } else if box_w * frame_h <= box_h * frame_w {
+                                (box_w, (box_w * frame_h / frame_w).max(1))
+                            } else {
+                                ((box_h * frame_w / frame_h).max(1), box_h)
+                            };
+                            let dx = ((box_w - fit_w) / 2) as i32;
+                            let dy = ((box_h - fit_h) / 2) as i32;
+                            FillRect(target, &rect, GetStockObject(BLACK_BRUSH) as _);
                             StretchDIBits(
-                                dc,
-                                0,
-                                0,
-                                width,
-                                height,
+                                target,
+                                dx,
+                                dy,
+                                fit_w as i32,
+                                fit_h as i32,
                                 0,
                                 0,
                                 frame.width as i32,
@@ -152,10 +209,16 @@ unsafe extern "system" fn preview_wndproc(
                         _ => {
                             let black = CreateSolidBrush(0);
                             if !black.is_null() {
-                                FillRect(dc, &rect, black);
+                                FillRect(target, &rect, black);
                                 DeleteObject(black);
                             }
                         }
+                    }
+                    if let Some((mem, bitmap, old)) = mem {
+                        BitBlt(dc, 0, 0, width, height, mem, 0, 0, SRCCOPY);
+                        SelectObject(mem, old);
+                        DeleteObject(bitmap);
+                        DeleteDC(mem);
                     }
                 }
                 // SAFETY: pairs with BeginPaint above.

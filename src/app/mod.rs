@@ -908,6 +908,7 @@ impl MuxApp {
     /// Fits each plane's picture to its surface: either letterboxed
     /// (`video-zoom` 0) or cropped to fill when the user picked 填充.
     fn sync_fit(&mut self, ppp: f32) {
+        self.media.set_preview_fill(self.settings.fill);
         let _ = ppp;
         let mode_tag = match self.settings.mode {
             CompareMode::Single => 0u8,
@@ -1214,24 +1215,15 @@ impl eframe::App for MuxApp {
 }
 
 impl MuxApp {
-    /// Keeps the scrub cache fed and drops the cached-frame overlay as soon as
-    /// libmpv shows the real frame again.
+    /// Keeps the scrub cache fed. The overlay itself is only taken down when
+    /// the gesture ends: hiding it whenever libmpv happens to catch up made the
+    /// picture alternate between the cached preview and the decoded frame on
+    /// every drag step, which read as flickering.
     fn pump_scrub_cache(&mut self) {
         let playing = self.is_playing();
         let scrubbing = self.scrub.is_some();
         self.media.cache_tick(playing, scrubbing);
         if !scrubbing {
-            self.media.hide_preview();
-            return;
-        }
-        // The overlay is only a stand-in: once the player sits on the requested
-        // time, let the real (full resolution) frame show through.
-        let (Some(target), Some(player)) = (self.scrub, self.media.player_a.as_ref()) else {
-            self.media.hide_preview();
-            return;
-        };
-        let fps = self.fps();
-        if (player.time_pos() - target).abs() < 0.5 / fps.max(1.0) {
             self.media.hide_preview();
         }
     }

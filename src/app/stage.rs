@@ -222,6 +222,8 @@ pub(crate) struct Media {
     cache_b: FrameCache,
     grabber: Option<Grabber>,
     last_grab: Instant,
+    /// Mirrors the 适应 / 填充 toggle for the overlay blit.
+    preview_fill: bool,
     /// Frame currently painted into `preview`, if any.
     preview_frame: Option<u64>,
 
@@ -258,6 +260,7 @@ impl Default for Media {
             cache_b: FrameCache::new(CACHE_BYTES),
             grabber: None,
             last_grab: Instant::now() - Duration::from_secs(1),
+            preview_fill: false,
             preview_frame: None,
             file_a: None,
             file_b: None,
@@ -440,6 +443,12 @@ impl Media {
         }
     }
 
+    /// Tells the overlay whether to cover or letterbox (mirrors 适应 / 填充).
+    pub fn set_preview_fill(&mut self, fill: bool) {
+        self.preview_fill = fill;
+        crate::video::childwin::set_preview_fill(fill);
+    }
+
     /// Paints the cached frame closest to `frame` over `plane`.
     ///
     /// Returns true when something was painted, so the caller can keep the
@@ -463,9 +472,13 @@ impl Media {
             return false;
         }
         crate::video::childwin::set_preview_frame(hwnd, image);
+        let was_visible = self.preview.visible;
         self.preview.place(Some(rect));
         self.preview_frame = Some(frame);
-        if let Some(win) = &self.preview.window {
+        // Only restack when the overlay appears: doing it every drag step makes
+        // the window take the top of the z-order again and again, which looks
+        // like the picture is blinking.
+        if !was_visible && let Some(win) = &self.preview.window {
             win.bring_to_top();
         }
         true
