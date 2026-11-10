@@ -221,6 +221,10 @@ pub(crate) struct Media {
     pub meta_a: Option<MediaInfo>,
     pub meta_b: Option<MediaInfo>,
 
+    /// Top-level window we are embedded in, cached so that checking "is the app
+    /// in the foreground" does not enumerate every window on each frame.
+    toplevel: i64,
+
     last_sync: Instant,
     last_hook_scan: Instant,
     /// Last colours pushed to the grip window, so a frame that changes nothing
@@ -244,6 +248,7 @@ impl Default for Media {
             file_b: None,
             meta_a: None,
             meta_b: None,
+            toplevel: 0,
             last_sync: Instant::now(),
             last_hook_scan: Instant::now() - HOOK_SCAN_INTERVAL,
             grip_style: None,
@@ -261,6 +266,7 @@ impl Media {
                 crate::diag!("[stage] ensure_native: no toplevel window yet");
                 return false;
             };
+            self.toplevel = parent;
             match ChildWindow::create(parent, 0x4D56_0001, "muxvideo-stage") {
                 Ok(win) => self.container = Some(win),
                 Err(_) => return false,
@@ -698,7 +704,24 @@ impl Media {
     /// The cursor-polling fallback only runs then: otherwise a click on another
     /// window that happens to sit above the picture would scrub the video.
     pub fn app_is_foreground(&self) -> bool {
-        find_window_by_title(WINDOW_TITLE).is_some_and(crate::video::childwin::is_foreground)
+        // Cached handle first: `find_window_by_title` walks every top-level
+        // window, which is far too heavy for a per-frame check.
+        let hwnd = if self.toplevel != 0 {
+            self.toplevel
+        } else {
+            match find_window_by_title(WINDOW_TITLE) {
+                Some(hwnd) => hwnd,
+                None => return false,
+            }
+        };
+        crate::video::childwin::is_foreground(hwnd)
+    }
+
+    /// Height of the tallest loaded picture, used to scale seek throttling.
+    pub fn max_height(&self) -> u32 {
+        let a = self.meta_a.as_ref().map_or(0, |m| m.height);
+        let b = self.meta_b.as_ref().map_or(0, |m| m.height);
+        a.max(b)
     }
 
     /// Hit-tests a screen point against the visible planes.

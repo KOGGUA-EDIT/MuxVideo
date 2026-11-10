@@ -38,7 +38,10 @@ const VOLUME_STEP: f64 = 4.0;
 /// milliseconds to decode a frame; asking for more than ~10 frames a second
 /// only queues cancels and makes the whole UI stutter, so the newest target is
 /// kept until this window has passed.
-const SEEK_MIN_GAP: Duration = Duration::from_millis(90);
+/// Scrubbing seek spacing for 1080p and smaller: about 30 frames per second.
+const SEEK_MIN_GAP: Duration = Duration::from_millis(33);
+/// 4K needs far more decoding time per frame, so it scrubs at ~11 frames/s.
+const SEEK_MIN_GAP_4K: Duration = Duration::from_millis(90);
 /// Zoom per wheel notch.
 const ZOOM_STEP: f64 = 0.10;
 const ZOOM_MIN: f64 = -2.0;
@@ -278,7 +281,14 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
                 // exact frame is resolved in `release`. Only one seek may be in
                 // flight: issuing another while the current one is still
                 // decoding cancels it, and on 4K VP9 that made the drag crawl.
-                if app.media.any_seeking() || drag.seek_at.elapsed() < SEEK_MIN_GAP {
+                // The gap scales with the picture size: 720p can afford ~30
+                // frames per second of scrubbing, 4K cannot.
+                let gap = if app.media.max_height() >= 1800 {
+                    SEEK_MIN_GAP_4K
+                } else {
+                    SEEK_MIN_GAP
+                };
+                if app.media.any_seeking() || drag.seek_at.elapsed() < gap {
                     crate::diag_verbose!("[scrub] hold target={target:.3} (seek in flight)");
                     if let Some(drag) = app.gesture.as_mut() {
                         drag.pending_target = Some(target);
@@ -531,6 +541,20 @@ fn synthetic_tap(app: &mut MuxApp, ctx: &egui::Context) {
 }
 
 fn poll_fallback(app: &mut MuxApp, ctx: &egui::Context) {
+    // Nothing to do unless a button is involved: the poll only turns physical
+    // button state into gestures. Bailing out here keeps the idle frame cheap —
+    // enumerating windows and hit-testing the pointer every frame was what made
+    // playback feel heavy after 0.1.36.
+    let (down_now, tapped_now) = crate::video::childwin::left_button_state();
+    if !down_now && !tapped_now && app.gesture.is_none() {
+        let mut state = lock(poll_state());
+        if state.button_down || state.synthetic {
+            state.button_down = false;
+            state.synthetic = false;
+        }
+        return;
+    }
+
     // A gesture already in flight is ours no matter which window sits under the
     // pointer: drive it from the cursor, because the child window that owns the
     // capture can be recreated at any moment (libmpv rebuilds its render window
@@ -567,7 +591,9 @@ fn poll_fallback(app: &mut MuxApp, ctx: &egui::Context) {
                 && app.media.plane_at_screen_lenient(sx, sy).is_some())
     });
     if !owns_pointer {
-        if let Some((sx, sy)) = crate::video::childwin::cursor_pos() {
+        if crate::app::diag::verbose()
+            && let Some((sx, sy)) = crate::video::childwin::cursor_pos()
+        {
             let (pid, class) = crate::video::childwin::hit_test_debug(sx, sy);
             crate::diag!(
                 "[poll] skip own={} focused={} hit_pid={pid} class={class}",
@@ -580,7 +606,7 @@ fn poll_fallback(app: &mut MuxApp, ctx: &egui::Context) {
         state.synthetic = false;
         return;
     }
-    let (down, tapped) = crate::video::childwin::left_button_state();
+    let (down, tapped) = (down_now, tapped_now);
     let now = Instant::now();
     let mut state = lock(poll_state());
 
