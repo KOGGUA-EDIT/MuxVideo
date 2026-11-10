@@ -364,7 +364,7 @@ impl eframe::App for Showcase {
                         section(ui, &palette, "波浪滑杆", "Wavy slider", |ui| {
                             ui.label(label_small(
                                 &palette,
-                                "Expressive · 8 px 轨道 · 振幅 Amplitude 3.5 px · 22 px 波长 · 52 px/s 滚动 · 竖长药丸把手 Pill handle",
+                                "Expressive · 8 px 轨道 · 振幅 Amplitude 5.5 px · 52 px 波长 · 40 px/s 滚动 · 竖长药丸把手 Pill handle",
                             ));
                             ui.add_space(space::SM);
                             wavy_demo_row(

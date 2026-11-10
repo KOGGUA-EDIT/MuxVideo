@@ -24,9 +24,9 @@ use crate::ui::Palette;
 
 /// Track thickness. Material 3 linear indicators use a 4 dp stroke; 6 px keeps
 /// the wave readable on a desktop-sized seek bar without looking like a hairline.
-const TRACK_HEIGHT: f32 = 6.0;
+const TRACK_HEIGHT: f32 = 8.0;
 /// Radius of the rounded track ends, in whole pixels.
-const TRACK_RADIUS_PX: u8 = 3;
+const TRACK_RADIUS_PX: u8 = 4;
 /// Gap between the active indicator and the remaining track (M3: 4 dp).
 const TRACK_GAP: f32 = 6.0;
 /// Radius of the stop indicator dot at the end of the track (M3: 4 dp wide).
@@ -37,17 +37,17 @@ const TRACK_INSET: f32 = 10.0;
 const HEIGHT: f32 = 40.0;
 
 /// Peak wave displacement from the track centre line (M3: 3.5 dp crest).
-const WAVE_AMPLITUDE: f32 = 4.0;
+const WAVE_AMPLITUDE: f32 = 5.5;
 /// Distance between wave crests (M3 determinate linear: 28 dp).
-const WAVE_LENGTH: f32 = 28.0;
+const WAVE_LENGTH: f32 = 52.0;
 /// Scroll speed of the wave: one wavelength per second, as M3 does.
-const PHASE_SPEED: f32 = 28.0;
+const PHASE_SPEED: f32 = 40.0;
 /// Seconds the wave takes to morph from flat to wavy (and back).
 const WAVE_ANIMATION: f32 = 0.30;
 /// Horizontal distance over which the wave ramps in from the flat start.
-const WAVE_RAMP_IN: f32 = 8.0;
+const WAVE_RAMP_IN: f32 = 16.0;
 /// Horizontal distance over which the wave tapers out before the handle.
-const WAVE_TAPER: f32 = 10.0;
+const WAVE_TAPER: f32 = 20.0;
 /// Upper bound on mesh segments, so a very wide track cannot explode.
 const MAX_SEGMENTS: usize = 1024;
 
