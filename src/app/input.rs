@@ -269,11 +269,15 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
                 let seek_due = drag.seek_at.elapsed() >= SEEK_MIN_GAP;
                 app.scrub = Some(target);
                 let frame = crate::app::state::frame_at(target, fps);
-                let window = (fps * 0.35).round().max(1.0) as u64;
+                // A wider window keeps the overlay up for the whole gesture: a
+                // half-decoded libmpv frame is far uglier than a slightly stale
+                // preview, so covering matters more than being frame exact.
+                let window = (fps * 1.2).round().max(1.0) as u64;
                 if seek_due {
                     app.media.seek_all(target);
-                    app.media.show_cached(plane, frame, window);
+                    drag.seek_at = std::time::Instant::now();
                 }
+                app.media.show_cached(plane, frame, window);
                 let total = crate::app::state::frame_at(duration, fps);
                 app.toast = Some(crate::app::state::Toast::info(format!(
                     "{} {} / {}",
@@ -283,9 +287,6 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
                 )));
                 if let Some(drag) = app.gesture.as_mut() {
                     drag.last_target = target;
-                    if seek_due {
-                        drag.seek_at = std::time::Instant::now();
-                    }
                 }
             }
         }

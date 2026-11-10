@@ -231,6 +231,8 @@ pub(crate) struct Media {
     preview_last: Option<(u64, std::sync::Arc<crate::video::childwin::PreviewFrame>)>,
     /// When the gesture started (used to throttle the debug log).
     preview_since: Option<Instant>,
+    /// Rotating sweep index used to prefetch around a paused playhead.
+    prefetch_tick: u32,
 
     pub file_a: Option<PathBuf>,
     pub file_b: Option<PathBuf>,
@@ -269,6 +271,7 @@ impl Default for Media {
             preview_frame: None,
             preview_last: None,
             preview_since: None,
+            prefetch_tick: 0,
             file_a: None,
             file_b: None,
             meta_a: None,
@@ -426,14 +429,19 @@ impl Media {
             );
         }
 
-        // While dragging, sample the frame under the pointer: that is the only
-        // region the user looks at, and the cache must cover it densely.
+        // Never grab while the user drags: `screenshot-raw` copies the whole
+        // frame (33 MB for 4K) and converting it competes with the decode that
+        // is trying to keep up with the pointer, which makes the drag itself
+        // stutter. Coverage is built up while playing and while idle instead.
+        // Grabbing is expensive (a full-frame readback plus conversion), so a
+        // drag only samples a few times per second: enough to keep the preview
+        // moving, cheap enough to leave the decoder alone.
         let interval = if scrubbing {
-            Duration::from_millis(90)
+            Duration::from_millis(300)
         } else if playing {
             Duration::from_millis(220)
         } else {
-            Duration::from_millis(700)
+            Duration::from_millis(260)
         };
         if self.last_grab.elapsed() < interval {
             return;
@@ -442,9 +450,18 @@ impl Media {
             return;
         };
         let fps = self.meta_a.as_ref().map(|meta| meta.fps).unwrap_or(30.0);
-        let frame = match scrub_target {
-            Some(target) => target,
-            None => (player.time_pos().max(0.0) * fps).round() as u64,
+        let now = (player.time_pos().max(0.0) * fps).round() as u64;
+        let _ = scrub_target;
+        // While paused, sweep a window around the playhead so that dragging in
+        // either direction immediately has something nearby to show.
+        let frame = if playing {
+            now
+        } else {
+            const SWEEP: [i64; 11] = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5];
+            let step = (fps * 0.35).round().max(1.0) as i64;
+            let offset = SWEEP[(self.prefetch_tick as usize) % SWEEP.len()];
+            self.prefetch_tick = self.prefetch_tick.wrapping_add(1);
+            (now as i64 + offset * step).max(0) as u64
         };
         self.last_grab = Instant::now();
         let Some(grabber) = &self.grabber else {
@@ -490,7 +507,10 @@ impl Media {
         // Distance between the pointer and the painted frame. A large value
         // means the overlay is showing a visibly different moment.
         static SHOWS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        if SHOWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed).is_multiple_of(16) {
+        if SHOWS
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            .is_multiple_of(16)
+        {
             crate::diag!(
                 "[cache] show target={frame} painted={painted} delta={}",
                 painted as i64 - frame as i64

@@ -239,7 +239,6 @@ pub fn to_preview(raw: &crate::mpv::player::RawFrame) -> Option<Arc<PreviewFrame
         _ => 4,
     };
     let swap = matches!(raw.format.as_str(), "bgr0" | "bgr24" | "bgra");
-    let has_alpha = matches!(raw.format.as_str(), "rgba" | "bgra");
     let source_row = (width as usize).checked_mul(bpp)?;
     if source_row > raw.stride {
         return None;
@@ -252,23 +251,45 @@ pub fn to_preview(raw: &crate::mpv::player::RawFrame) -> Option<Arc<PreviewFrame
     let mut bgra = vec![0u8; out_stride * out_height as usize];
 
     for y in 0..out_height as usize {
-        // Nearest neighbour is fine for a preview and keeps this cheap.
-        let source_y = (y * height as usize / out_height as usize).min(height as usize - 1);
-        let source = &raw.data[source_y * raw.stride..source_y * raw.stride + source_row];
+        // Bilinear sampling: nearest neighbour aliases the picture and makes
+        // the preview look unnaturally sharp/jaggy next to the real frame.
+        let sy = (y as f32 + 0.5) * (height as f32 / out_height as f32) - 0.5;
+        let y0 = sy.floor().max(0.0) as usize;
+        let y1 = (y0 + 1).min(height as usize - 1);
+        let fy = (sy - sy.floor()).clamp(0.0, 1.0);
+        let row0 = &raw.data[y0 * raw.stride..y0 * raw.stride + source_row];
+        let row1 = &raw.data[y1 * raw.stride..y1 * raw.stride + source_row];
         let row = &mut bgra[y * out_stride..(y + 1) * out_stride];
         for x in 0..out_width as usize {
-            let source_x = (x * width as usize / out_width as usize).min(width as usize - 1);
-            let s = source_x * bpp;
-            let (b, g, r, a) = if swap {
-                (source[s], source[s + 1], source[s + 2], source[s + 3])
-            } else {
-                (source[s + 2], source[s + 1], source[s], source[s + 3])
+            let sx = (x as f32 + 0.5) * (width as f32 / out_width as f32) - 0.5;
+            let x0 = sx.floor().max(0.0) as usize;
+            let x1 = (x0 + 1).min(width as usize - 1);
+            let fx = (sx - sx.floor()).clamp(0.0, 1.0);
+
+            let sample = |row: &[u8], xi: usize| -> [f32; 3] {
+                let s = xi * bpp;
+                let (b, g, r) = if swap {
+                    (row[s], row[s + 1], row[s + 2])
+                } else {
+                    (row[s + 2], row[s + 1], row[s])
+                };
+                [f32::from(b), f32::from(g), f32::from(r)]
             };
+            let p00 = sample(row0, x0);
+            let p10 = sample(row0, x1);
+            let p01 = sample(row1, x0);
+            let p11 = sample(row1, x1);
+            let mut out = [0u8; 3];
+            for c in 0..3 {
+                let top = p00[c] + (p10[c] - p00[c]) * fx;
+                let bottom = p01[c] + (p11[c] - p01[c]) * fx;
+                out[c] = (top + (bottom - top) * fy).round().clamp(0.0, 255.0) as u8;
+            }
             let d = x * 4;
-            row[d] = b;
-            row[d + 1] = g;
-            row[d + 2] = r;
-            row[d + 3] = if has_alpha { a } else { 255 };
+            row[d] = out[0];
+            row[d + 1] = out[1];
+            row[d + 2] = out[2];
+            row[d + 3] = 255;
         }
     }
 
