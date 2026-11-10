@@ -83,3 +83,9 @@ exe 会继承 **Low 完整性**。Windows 把 Low 完整性的可执行文件当
 - 相关脚本：`tools\set_integrity_medium.ps1`（单次改级别）、`tools\deploy.ps1`（完整发布）。
   历史上为排查改过的 SmartScreen 注册表已全部还原（AppHost 三处 1/1/0，无 Policy 覆盖），
   还原脚本 `tools\restore_smartscreen_all.ps1`。
+
+## 设计参考
+
+- UI 一律按 Material 3 / M3 Expressive（~/.dsh/skills/material-design-3-ui 已装同名 skill，可直接加载）；改配色、组件、动效前先对照 eferences/m3-expressive.md 与 eferences/motion.md。
+- 线性波浪进度条参数：轨道 6px、波长 28px、振幅 4px、1 波长/秒、活动段与轨道间隙 6px、末端停止点 4px（见 src/ui/wavy.rs 顶部常量）。
+
