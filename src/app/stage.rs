@@ -687,6 +687,37 @@ impl Media {
     /// Returns the plane plus the point in that plane's client coordinates.
     /// Used by the cursor-polling fallback, which does not depend on the
     /// renderer windows forwarding their mouse messages to us.
+    /// Like [`plane_at_screen`], but also answers when the pointer is merely
+    /// somewhere over the stage: right after a launch the render window can be
+    /// a few frames behind the layout, and refusing the press there made the
+    /// very first drag of a fresh window do nothing at all.
+    pub fn plane_at_screen_lenient(&self, sx: i32, sy: i32) -> Option<(Plane, i32, i32)> {
+        if let Some(hit) = self.plane_at_screen(sx, sy) {
+            return Some(hit);
+        }
+        let container = self.container.as_ref()?.hwnd();
+        if container == 0 {
+            return None;
+        }
+        let (x, y, w, h) = crate::video::childwin::window_rect(container)?;
+        if sx < x || sy < y || sx >= x + w || sy >= y + h {
+            return None;
+        }
+        for plane in [Plane::A, Plane::B] {
+            let surface = match plane {
+                Plane::A => &self.plane_a,
+                Plane::B => &self.plane_b,
+            };
+            if surface.rect.2 <= 0 || surface.rect.3 <= 0 || surface.hwnd == 0 {
+                continue;
+            }
+            if let Some((cx, cy)) = crate::video::childwin::screen_to_client(surface.hwnd, sx, sy) {
+                return Some((plane, cx, cy));
+            }
+        }
+        None
+    }
+
     pub fn plane_at_screen(&self, sx: i32, sy: i32) -> Option<(Plane, i32, i32)> {
         for plane in [Plane::A, Plane::B] {
             let surface = match plane {

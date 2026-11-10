@@ -103,11 +103,11 @@ pub(super) fn pump(app: &mut MuxApp, ctx: &egui::Context) {
         };
         let Some(plane) = app.media.plane_for_hwnd(event.hwnd) else {
             // The stage container and the toplevel get the bubbled-up copies.
-            crate::diag!("[native] unclaimed {:?} hwnd={}", event.event, event.hwnd);
+            crate::diag_verbose!("[native] unclaimed {:?} hwnd={}", event.event, event.hwnd);
             continue;
         };
         debug_log(&event);
-        crate::diag!("[native] {:?} plane={plane:?}", event.event);
+        crate::diag_verbose!("[native] {:?} plane={plane:?}", event.event);
         match event.event {
             MouseEvent::Down { x, y, button } => press(app, plane, x, y, button),
             MouseEvent::Move { x, y } => drag_to(app, ctx, x, y),
@@ -301,6 +301,12 @@ fn release(app: &mut MuxApp, ctx: &egui::Context) {
     let Some(drag) = app.gesture.take() else {
         return;
     };
+    crate::diag!(
+        "[gesture] release mode={:?} moved={} ms={}",
+        drag.mode,
+        drag.moved,
+        drag.began.elapsed().as_millis()
+    );
     let quick = drag.began.elapsed() < Duration::from_millis(CLICK_MAX_MS);
     if drag.mode == Mode::Scrub {
         // Scrubbing leaves the player parked on the frame under the cursor.
@@ -496,7 +502,7 @@ fn poll_fallback(app: &mut MuxApp, ctx: &egui::Context) {
         let (down, _) = crate::video::childwin::left_button_state();
         if down
             && let Some((sx, sy)) = crate::video::childwin::cursor_pos()
-            && let Some((plane, cx, cy)) = app.media.plane_at_screen(sx, sy)
+            && let Some((plane, cx, cy)) = app.media.plane_at_screen_lenient(sx, sy)
             && app.gesture.as_ref().is_some_and(|d| d.plane == plane)
         {
             drag_to(app, ctx, cx, cy);
@@ -505,13 +511,17 @@ fn poll_fallback(app: &mut MuxApp, ctx: &egui::Context) {
         }
     }
 
-    // Only trust the poll while the player owns the foreground: otherwise a
-    // click on whatever window covers the picture would scrub it.
-    // The only trustworthy signal: the window under the pointer belongs to
-    // this process. A window can be "foreground" while another one covers it,
-    // so focus alone is not enough.
-    let owns_pointer = crate::video::childwin::cursor_pos()
-        .is_some_and(|(sx, sy)| crate::video::childwin::hit_test_owns(sx, sy));
+    // Only trust the poll while the player owns the pointer: otherwise a click
+    // on whatever window covers the picture would scrub it. Two signals count:
+    // the window under the pointer belongs to this process, or this window is
+    // the foreground one and the pointer is over the stage (the very first
+    // press of a fresh window can land before the render child exists).
+    let pointer = crate::video::childwin::cursor_pos();
+    let owns_pointer = pointer.is_some_and(|(sx, sy)| {
+        crate::video::childwin::hit_test_owns(sx, sy)
+            || (app.media.app_is_foreground()
+                && app.media.plane_at_screen_lenient(sx, sy).is_some())
+    });
     if !owns_pointer {
         if let Some((sx, sy)) = crate::video::childwin::cursor_pos() {
             let (pid, class) = crate::video::childwin::hit_test_debug(sx, sy);
@@ -579,7 +589,7 @@ fn poll_fallback(app: &mut MuxApp, ctx: &egui::Context) {
             return;
         }
         if let Some((sx, sy)) = crate::video::childwin::cursor_pos()
-            && let Some((plane, cx, cy)) = app.media.plane_at_screen(sx, sy)
+            && let Some((plane, cx, cy)) = app.media.plane_at_screen_lenient(sx, sy)
         {
             state.synthetic = true;
             crate::diag!("[poll] synthetic press ({cx},{cy})");
