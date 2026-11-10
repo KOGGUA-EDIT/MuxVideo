@@ -262,6 +262,9 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
                 // Keyframe seek keeps a 4K VP9 file following the pointer; the
                 // exact frame is resolved in `release`.
                 app.media.seek_all_fast(target);
+                crate::diag_verbose!(
+                    "[scrub] seek target={target:.3} from={frame0:.3} tx={tx} dur={duration:.3}"
+                );
                 let total = crate::app::state::frame_at(duration, fps);
                 app.toast = Some(crate::app::state::Toast::info(format!(
                     "{} {} / {}",
@@ -507,14 +510,21 @@ fn poll_fallback(app: &mut MuxApp, ctx: &egui::Context) {
     // whenever a file is swapped in) and then WM_MOUSEMOVE simply never arrives.
     if app.gesture.is_some() {
         let (down, _) = crate::video::childwin::left_button_state();
-        if down
-            && let Some((sx, sy)) = crate::video::childwin::cursor_pos()
-            && let Some((plane, cx, cy)) = app.media.plane_at_screen_lenient(sx, sy)
-            && app.gesture.as_ref().is_some_and(|d| d.plane == plane)
-        {
-            drag_to(app, ctx, cx, cy);
-            ctx.request_repaint();
-            return;
+        if down {
+            let hit = crate::video::childwin::cursor_pos()
+                .and_then(|(sx, sy)| app.media.plane_at_screen_lenient(sx, sy));
+            if let Some((plane, cx, cy)) = hit
+                && app.gesture.as_ref().is_some_and(|d| d.plane == plane)
+            {
+                drag_to(app, ctx, cx, cy);
+                ctx.request_repaint();
+                return;
+            }
+            crate::diag_verbose!(
+                "[poll] active gesture, no plane: hit={:?} cursor={:?}",
+                hit.map(|(plane, _, _)| plane),
+                crate::video::childwin::cursor_pos()
+            );
         }
     }
 
