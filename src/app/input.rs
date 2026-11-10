@@ -42,7 +42,7 @@ const ZOOM_MAX: f64 = 3.0;
 /// How close (in pixels) the pointer must be to the wipe divider to grab it.
 const HANDLE_GRAB: f32 = 22.0;
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Mode {
     /// Left press that drags the playhead frame by frame (RV Player style).
     Scrub,
@@ -103,6 +103,7 @@ pub(super) fn pump(app: &mut MuxApp, ctx: &egui::Context) {
         };
         let Some(plane) = app.media.plane_for_hwnd(event.hwnd) else {
             // The stage container and the toplevel get the bubbled-up copies.
+            crate::diag!("[native] unclaimed {:?} hwnd={}", event.event, event.hwnd);
             continue;
         };
         debug_log(&event);
@@ -138,6 +139,7 @@ fn press(app: &mut MuxApp, plane: Plane, x: i32, y: i32, button: u8) {
         _ => return,
     };
     let frame0 = app.time_pos();
+    crate::diag!("[gesture] press mode={mode:?} plane={plane:?} at=({x},{y}) t={frame0:.3}");
     // Do not touch playback here: a plain click must keep its play/pause
     // meaning, so the picture is only parked once a real scrub starts.
     app.gesture = Some(Drag {
@@ -486,6 +488,23 @@ fn synthetic_tap(app: &mut MuxApp, ctx: &egui::Context) {
 }
 
 fn poll_fallback(app: &mut MuxApp, ctx: &egui::Context) {
+    // A gesture already in flight is ours no matter which window sits under the
+    // pointer: drive it from the cursor, because the child window that owns the
+    // capture can be recreated at any moment (libmpv rebuilds its render window
+    // whenever a file is swapped in) and then WM_MOUSEMOVE simply never arrives.
+    if app.gesture.is_some() {
+        let (down, _) = crate::video::childwin::left_button_state();
+        if down
+            && let Some((sx, sy)) = crate::video::childwin::cursor_pos()
+            && let Some((plane, cx, cy)) = app.media.plane_at_screen(sx, sy)
+            && app.gesture.as_ref().is_some_and(|d| d.plane == plane)
+        {
+            drag_to(app, ctx, cx, cy);
+            ctx.request_repaint();
+            return;
+        }
+    }
+
     // Only trust the poll while the player owns the foreground: otherwise a
     // click on whatever window covers the picture would scrub it.
     // The only trustworthy signal: the window under the pointer belongs to
