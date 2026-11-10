@@ -75,7 +75,6 @@ pub struct MuxApp {
     /// Gesture in progress on a native video surface.
     pub(super) gesture: Option<input::Drag>,
     /// Set after a double click so its trailing press is not read as a click.
-    pub(super) suppress_click: Option<Instant>,
     /// Picture pan/zoom (RV style), applied to every plane.
     pub(super) pan: (f64, f64),
     pub(super) zoom: f64,
@@ -97,6 +96,10 @@ pub struct MuxApp {
     saved_outer: Option<(f32, f32, f32, f32)>,
     /// Whether the window was maximized before going immersive.
     saved_maximized: bool,
+    /// Manual window move / resize in progress (see `begin_window_move`).
+    window_move: Option<WindowMove>,
+    /// Last completed click in the picture, for our own double-click window.
+    last_click: Option<(std::time::Instant, i32, i32)>,
     /// Hint shown in the transport bar for the widget under the pointer.
     /// Tooltips cannot be used next to the stage: the native video planes sit
     /// above egui and swallow anything drawn over the picture.
@@ -154,7 +157,6 @@ impl MuxApp {
             last_save: Instant::now(),
             scrub: None,
             gesture: None,
-            suppress_click: None,
             pan: (0.0, 0.0),
             zoom: 0.0,
             rail_pill: 0.0,
@@ -168,6 +170,8 @@ impl MuxApp {
             frame_immersive: false,
             saved_outer: None,
             saved_maximized: false,
+            window_move: None,
+            last_click: None,
             hover_hint: None,
             last_viewport: None,
             blink_clock: Instant::now(),
@@ -711,10 +715,89 @@ impl MuxApp {
         }
     }
 
+    /// Start a manual window move from a chrome area.
+    pub(super) fn begin_window_move(&mut self, ctx: &egui::Context) {
+        if self.immersive || self.window_move.is_some() {
+            return;
+        }
+        let Some(hwnd) = crate::video::childwin::find_window_by_title(stage::WINDOW_TITLE) else {
+            return;
+        };
+        let (Some(rect), Some(cursor)) = (
+            crate::video::childwin::window_rect(hwnd),
+            crate::video::childwin::cursor_pos(),
+        ) else {
+            return;
+        };
+        self.window_move = Some(WindowMove {
+            moving: true,
+            edges: (false, false, false, false),
+            start_cursor: cursor,
+            start_rect: rect,
+        });
+        ctx.request_repaint();
+    }
+
+    /// Apply the tracked move / resize until the button is released.
+    fn pump_window_move(&mut self, ctx: &egui::Context) {
+        let Some(state) = &self.window_move else {
+            return;
+        };
+        if !crate::video::childwin::left_button_down() {
+            self.window_move = None;
+            return;
+        }
+        let Some(hwnd) = crate::video::childwin::find_window_by_title(stage::WINDOW_TITLE) else {
+            self.window_move = None;
+            return;
+        };
+        let Some((cx, cy)) = crate::video::childwin::cursor_pos() else {
+            return;
+        };
+        let dx = cx - state.start_cursor.0;
+        let dy = cy - state.start_cursor.1;
+        let (x, y, w, h) = state.start_rect;
+        let (mut nx, mut ny, mut nw, mut nh) = (x, y, w, h);
+        if state.moving {
+            nx = x + dx;
+            ny = y + dy;
+        } else {
+            let (west, east, north, south) = state.edges;
+            if west {
+                nx = x + dx;
+                nw = w - dx;
+            }
+            if east {
+                nw = w + dx;
+            }
+            if north {
+                ny = y + dy;
+                nh = h - dy;
+            }
+            if south {
+                nh = h + dy;
+            }
+            if nw < MIN_WINDOW_W {
+                nw = MIN_WINDOW_W;
+                if west {
+                    nx = x + w - MIN_WINDOW_W;
+                }
+            }
+            if nh < MIN_WINDOW_H {
+                nh = MIN_WINDOW_H;
+                if north {
+                    ny = y + h - MIN_WINDOW_H;
+                }
+            }
+        }
+        crate::video::childwin::set_window_rect(hwnd, nx, ny, nw, nh);
+        ctx.request_repaint();
+    }
+
     // ── per-frame sync ────────────────────────────────────────────────────
 
     /// Undecorated windows need their own resize borders.
-    fn resize_borders(&self, ctx: &egui::Context) {
+    fn resize_borders(&mut self, ctx: &egui::Context) {
         let Some(pointer) = ctx.input(|i| i.pointer.hover_pos()) else {
             return;
         };
@@ -737,14 +820,28 @@ impl MuxApp {
             _ => return,
         };
         ctx.set_cursor_icon(cursor);
+        let _ = dir;
+        if self.immersive || self.window_move.is_some() {
+            return;
+        }
         if ctx.input(|i| i.pointer.primary_pressed()) {
-            crate::diag!(
-                "[window] begin resize {dir:?} at ({:.0},{:.0}) content={:?}",
-                pointer.x,
-                pointer.y,
-                rect
-            );
-            ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
+            let Some(hwnd) = crate::video::childwin::find_window_by_title(stage::WINDOW_TITLE)
+            else {
+                return;
+            };
+            let (Some(win), Some(cursor_pos)) = (
+                crate::video::childwin::window_rect(hwnd),
+                crate::video::childwin::cursor_pos(),
+            ) else {
+                return;
+            };
+            crate::diag!("[window] begin resize w={west} e={east} n={north} s={south} win={win:?}");
+            self.window_move = Some(WindowMove {
+                moving: false,
+                edges: (west, east, north, south),
+                start_cursor: cursor_pos,
+                start_rect: win,
+            });
         }
     }
 
@@ -911,11 +1008,31 @@ impl MuxApp {
     }
 }
 
+/// A window move or resize driven by us instead of the OS.
+///
+/// `ViewportCommand::StartDrag` / `BeginResize` hand the gesture to the Windows
+/// modal loops, which silently do nothing while our window is not the
+/// foreground window — that is why dragging "worked, then stopped working"
+/// after the window had been fullscreen once. Tracking the rectangle here and
+/// applying it with `SetWindowPos` has no such dependency.
+pub(super) struct WindowMove {
+    /// `true` to move the window, `false` to resize it.
+    moving: bool,
+    /// Which borders are being dragged: west, east, north, south.
+    edges: (bool, bool, bool, bool),
+    start_cursor: (i32, i32),
+    start_rect: (i32, i32, i32, i32),
+}
+
+const MIN_WINDOW_W: i32 = 640;
+const MIN_WINDOW_H: i32 = 400;
+
 impl eframe::App for MuxApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frame_no += 1;
         if !self.immersive {
             self.resize_borders(ctx);
+            self.pump_window_move(ctx);
         }
 
         // Command-line files open on the first frame, once the native window exists.

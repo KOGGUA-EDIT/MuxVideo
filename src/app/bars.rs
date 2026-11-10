@@ -147,9 +147,9 @@ pub(super) fn titlebar(ui: &mut Ui, app: &mut MuxApp) {
     let p = app.palette.clone();
     let bar = ui.max_rect();
     let drag = ui.interact(bar, ui.id().with("titlebar-drag"), Sense::click_and_drag());
-    if drag.dragged() {
+    if drag.drag_started() {
         crate::diag!("[window] titlebar drag");
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        app.begin_window_move(ui.ctx());
     }
     if drag.double_clicked() {
         let maximized = ui.ctx().input(|i| i.viewport().maximized.unwrap_or(false));
@@ -334,10 +334,10 @@ pub(super) fn rail(ui: &mut Ui, app: &mut MuxApp) {
     if !app.near_edge(ui.ctx())
         && ui
             .interact(full, ui.id().with("rail-drag"), Sense::click_and_drag())
-            .dragged()
+            .drag_started()
     {
         crate::diag!("[window] chrome drag");
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        app.begin_window_move(ui.ctx());
     }
 
     type Glyph = fn(&mut Ui, f32, Color32) -> egui::Response;
@@ -410,10 +410,10 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
     if !app.near_edge(ui.ctx())
         && ui
             .interact(bar_rect, ui.id().with("bar-drag"), Sense::click_and_drag())
-            .dragged()
+            .drag_started()
     {
         crate::diag!("[window] chrome drag");
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        app.begin_window_move(ui.ctx());
     }
     ui.scope_builder(
         UiBuilder::new()
@@ -731,10 +731,10 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
             ui.id().with("transport-drag"),
             Sense::click_and_drag(),
         )
-        .dragged()
+        .drag_started()
     {
         crate::diag!("[window] chrome drag");
-        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+        app.begin_window_move(ui.ctx());
     }
 
     let inner = card.shrink2(vec2(22.0, 10.0));

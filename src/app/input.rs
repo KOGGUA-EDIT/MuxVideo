@@ -27,6 +27,11 @@ use super::state::{CompareMode, Toast};
 const CLICK_MAX_MS: u64 = 400;
 /// Movement (physical pixels) that turns a press into a drag.
 const DRAG_SLOP: i32 = 5;
+/// Our own double-click window. The system one is ~500 ms, which turned quick
+/// play/pause toggles into fullscreen toggles.
+const DOUBLE_CLICK_MS: u64 = 250;
+/// Two clicks further apart than this (physical pixels) are not a double click.
+const DOUBLE_CLICK_PX: i32 = 12;
 /// Volume per wheel notch, in mpv volume units.
 const VOLUME_STEP: f64 = 4.0;
 /// Zoom per wheel notch.
@@ -105,12 +110,11 @@ pub(super) fn pump(app: &mut MuxApp, ctx: &egui::Context) {
         match event.event {
             MouseEvent::Down { x, y, button } => press(app, plane, x, y, button),
             MouseEvent::Move { x, y } => drag_to(app, ctx, x, y),
-            MouseEvent::Up { .. } => release(app),
-            MouseEvent::DoubleClick => {
-                app.gesture = None;
-                app.suppress_click = Some(Instant::now());
-                toggle_fullscreen(app, ctx);
-            }
+            MouseEvent::Up { .. } => release(app, ctx),
+            // The OS double-click uses the system interval (0.5 s by default),
+            // which is long enough that quick play/pause toggles landed here.
+            // Clicks are paired by `release` instead, with a tighter window.
+            MouseEvent::DoubleClick => {}
             MouseEvent::Wheel { delta } => wheel(app, ctx, delta),
             MouseEvent::Leave => {}
         }
@@ -291,19 +295,31 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
     }
 }
 
-fn release(app: &mut MuxApp) {
+fn release(app: &mut MuxApp, ctx: &egui::Context) {
     let Some(drag) = app.gesture.take() else {
         return;
     };
     let quick = drag.began.elapsed() < Duration::from_millis(CLICK_MAX_MS);
-    let suppressed = app
-        .suppress_click
-        .is_some_and(|at| at.elapsed() < Duration::from_millis(CLICK_MAX_MS));
     if drag.mode == Mode::Scrub {
         // Scrubbing leaves the player parked on the frame under the cursor.
         app.scrub = None;
-        if !drag.moved && quick && !suppressed {
-            app.suppress_click = None;
+        if drag.moved || !quick {
+            return;
+        }
+        let now = Instant::now();
+        let is_double = app.last_click.is_some_and(|(at, x, y)| {
+            now.duration_since(at) < Duration::from_millis(DOUBLE_CLICK_MS)
+                && (x - drag.start.0).abs() <= DOUBLE_CLICK_PX
+                && (y - drag.start.1).abs() <= DOUBLE_CLICK_PX
+        });
+        if is_double {
+            // Undo the toggle from the first click so a double click only
+            // changes the view, then go immersive.
+            app.last_click = None;
+            app.toggle_play();
+            toggle_fullscreen(app, ctx);
+        } else {
+            app.last_click = Some((now, drag.start.0, drag.start.1));
             app.toggle_play();
         }
     }
@@ -465,7 +481,7 @@ fn synthetic_tap(app: &mut MuxApp, ctx: &egui::Context) {
         );
     }
     press(app, plane, cx, cy, 0);
-    release(app);
+    release(app, ctx);
     ctx.request_repaint();
 }
 
@@ -518,7 +534,7 @@ fn poll_fallback(app: &mut MuxApp, ctx: &egui::Context) {
         // A release the hook never reported would otherwise leave the gesture
         // stuck forever.
         if app.gesture.is_some() {
-            release(app);
+            release(app, ctx);
             ctx.request_repaint();
         } else if !synthetic && !hook_press {
             // The poll saw a press but the gesture never started (released

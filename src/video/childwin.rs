@@ -1209,6 +1209,29 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Move and resize our own top-level window without going through the
+/// activation-dependent modal move/resize loops.
+pub fn set_window_rect(hwnd: i64, x: i32, y: i32, w: i32, h: i32) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SWP_NOACTIVATE, SWP_NOZORDER, SetWindowPos};
+
+    if hwnd == 0 {
+        return;
+    }
+    // SAFETY: our own window; the rectangle comes from a tracked drag.
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd as HWND,
+            std::ptr::null_mut(),
+            x,
+            y,
+            w.max(320),
+            h.max(200),
+            SWP_NOACTIVATE | SWP_NOZORDER,
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
