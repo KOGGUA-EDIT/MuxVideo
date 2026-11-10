@@ -813,25 +813,23 @@ fn handle_double_click(hwnd: HWND, lparam: LPARAM, button: u8) {
 
 fn handle_capture_changed(hwnd: HWND) {
     let key = hwnd_key(hwnd);
-    let Some((x, y, pressed)) = lock(input_hooks()).get_mut(&key).map(|state| {
+    let Some(pressed) = lock(input_hooks()).get_mut(&key).map(|state| {
         let pressed = std::mem::take(&mut state.pressed);
-        (state.last_x, state.last_y, pressed)
+        state.leave_tracking = false;
+        pressed
     }) else {
         return;
     };
     if pressed == 0 {
         return;
     }
-    for button in 0..3u8 {
-        if pressed & (1u8 << button) != 0 {
-            queue_event(InputEvent {
-                hwnd: key as i64,
-                event: MouseEvent::Up { x, y, button },
-            });
-        }
-    }
-    // Capture was lost mid-drag (alt-tab, another window); tell the consumer
-    // the pointer is no longer tracked over this surface.
+    // Capture can be taken away in the middle of a drag without the button ever
+    // going up: activating the window (the very first click of a fresh window
+    // does exactly that) releases it. Reporting an Up here ended the gesture
+    // while the user was still holding the button -- that is what made the
+    // first drag of a new window do nothing. The physical button is polled
+    // every frame, so the gesture still ends when it really ends.
+    crate::diag!("[hook] capture lost with {pressed} button(s) down, keeping gesture");
     queue_event(InputEvent {
         hwnd: key as i64,
         event: MouseEvent::Leave,
