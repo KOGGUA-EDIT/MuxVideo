@@ -1209,6 +1209,32 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
+/// Whether the window is currently maximized.
+pub fn is_maximized(hwnd: i64) -> bool {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::IsZoomed;
+
+    if hwnd == 0 {
+        return false;
+    }
+    // SAFETY: read-only query on our own window.
+    unsafe { IsZoomed(hwnd as HWND) != 0 }
+}
+
+/// Restore a maximized window to its previous floating size.
+pub fn restore_window(hwnd: i64) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SW_RESTORE, ShowWindow};
+
+    if hwnd == 0 {
+        return;
+    }
+    // SAFETY: our own window; SW_RESTORE only affects the show state.
+    unsafe {
+        let _ = ShowWindow(hwnd as HWND, SW_RESTORE);
+    }
+}
+
 /// Move and resize our own top-level window without going through the
 /// activation-dependent modal move/resize loops.
 pub fn set_window_rect(hwnd: i64, x: i32, y: i32, w: i32, h: i32) {

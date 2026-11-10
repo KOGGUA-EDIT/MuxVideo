@@ -723,6 +723,11 @@ impl MuxApp {
         let Some(hwnd) = crate::video::childwin::find_window_by_title(stage::WINDOW_TITLE) else {
             return;
         };
+        // Dragging a maximized window restores it first, like every other app.
+        if crate::video::childwin::is_maximized(hwnd) {
+            crate::video::childwin::restore_window(hwnd);
+            crate::diag!("[window] restore before move");
+        }
         let (Some(rect), Some(cursor)) = (
             crate::video::childwin::window_rect(hwnd),
             crate::video::childwin::cursor_pos(),
@@ -829,6 +834,13 @@ impl MuxApp {
             else {
                 return;
             };
+            // Resizing a maximized window restores it first and continues from
+            // the restored geometry, otherwise Windows silently ignores the
+            // size change and the drag appears to do nothing.
+            if crate::video::childwin::is_maximized(hwnd) {
+                crate::video::childwin::restore_window(hwnd);
+                crate::diag!("[window] restore before resize");
+            }
             let (Some(win), Some(cursor_pos)) = (
                 crate::video::childwin::window_rect(hwnd),
                 crate::video::childwin::cursor_pos(),
