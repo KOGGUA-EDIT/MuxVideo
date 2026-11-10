@@ -32,8 +32,15 @@ cargo build --offline
   每 0.45s 轮流显示；`sync_layout` 的第 6 参 `blink_b` 决定此刻显示哪一路，停帧也要 30ms 重绘）。
 - **不要试图用 `lavfi-complex` 做两文件的逐像素差值**：`[vid1]/[vid2]` 是同一文件的第 1/2 条
   视频轨，传两个文件会报 `Pad vid2 is not connected to anything.`（已实测），单实例做不到。
-- 鼠标事件靠 `src/app/input.rs` + `src/video/childwin.rs` 的子类化钩子（`take_input_events()`）捞回，
-  必须按 `InputEvent.hwnd` 过滤掉 container / eframe 顶层的冒泡副本，否则音量会翻倍。
+- 鼠标事件靠 `src/app/input.rs` + `src/video/childwin.rs` 的**双路径**捞回：
+  ① 子类化钩子（`take_input_events()`），按 `InputEvent.hwnd` 过滤掉 container / eframe 顶层的冒泡副本，
+  否则音量会翻倍；每 400 ms 重新扫描 plane 的所有子窗口（含 libmpv 自己建的渲染窗口），换片后钩子才不会失效。
+  ② 光标轮询兜底（`GetAsyncKeyState` + `GetCursorPos`）：只在 `hit_test_owns()`（`WindowFromPoint` + 进程号比对）
+  为真时生效；按下沿超过 80 ms 没有手势、或有手势收不到位移、或按下抬起都夹在两次采样之间，就由轮询补发。
+  **改这里务必保持「钩子优先、轮询仅在缺失时补」，否则一次点击会 toggle 两次。**
+- 调试开关：exe 同目录放一个 `input-debug.flag`（或设 `MUXVIDEO_LOG=1`）会写 `app-debug.log` / `input-debug.log`；
+  `MUXVIDEO_NO_HOOKS=1` 可禁用钩子单独验证轮询路径。真机验证只用 `tools\real_drag.ps1` / `real_click.ps1`
+  注入的真实输入，`input-debug.log` 里出现 `[native] Down/Up` 才算事件到位（MCP 的 drag 常落在别的窗口）。
 - A 面为同步 master，B 面漂移 > 80 ms 时 IPC-free 的 `seek_absolute` 纠偏（250 ms 节流）。
 - 官方 `mpv.exe` 的 `--wid` 不可用（`[vo/gpu/win32] unable to create window!`），不要回退到 shell out。
 

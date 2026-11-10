@@ -148,6 +148,7 @@ pub(super) fn titlebar(ui: &mut Ui, app: &mut MuxApp) {
     let bar = ui.max_rect();
     let drag = ui.interact(bar, ui.id().with("titlebar-drag"), Sense::click_and_drag());
     if drag.dragged() {
+        crate::diag!("[window] titlebar drag");
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
     }
     if drag.double_clicked() {
@@ -335,6 +336,7 @@ pub(super) fn rail(ui: &mut Ui, app: &mut MuxApp) {
             .interact(full, ui.id().with("rail-drag"), Sense::click_and_drag())
             .dragged()
     {
+        crate::diag!("[window] chrome drag");
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
     }
 
@@ -410,6 +412,7 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
             .interact(bar_rect, ui.id().with("bar-drag"), Sense::click_and_drag())
             .dragged()
     {
+        crate::diag!("[window] chrome drag");
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
     }
     ui.scope_builder(
@@ -722,6 +725,7 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
         )
         .dragged()
     {
+        crate::diag!("[window] chrome drag");
         ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
     }
 

@@ -12,6 +12,7 @@
 //! * wheel — volume, `Ctrl`+wheel — zoom
 //! * double click — fullscreen
 
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
@@ -62,10 +63,8 @@ pub(crate) struct Drag {
 /// Per-frame entry point: drains the native input queue into player actions.
 pub(super) fn pump(app: &mut MuxApp, ctx: &egui::Context) {
     let events = crate::video::take_input_events();
-    if events.is_empty() {
-        return;
-    }
     for event in events {
+        note_hook_event(&event.event);
         // The wipe grip is its own native window: translate its coordinates
         // into plane A so the seam drag maths stays the same.
         let mapped = if app.media.plane_for_hwnd(event.hwnd).is_none()
@@ -102,6 +101,7 @@ pub(super) fn pump(app: &mut MuxApp, ctx: &egui::Context) {
             continue;
         };
         debug_log(&event);
+        crate::diag!("[native] {:?} plane={plane:?}", event.event);
         match event.event {
             MouseEvent::Down { x, y, button } => press(app, plane, x, y, button),
             MouseEvent::Move { x, y } => drag_to(app, ctx, x, y),
@@ -115,6 +115,8 @@ pub(super) fn pump(app: &mut MuxApp, ctx: &egui::Context) {
             MouseEvent::Leave => {}
         }
     }
+
+    poll_fallback(app, ctx);
 }
 
 fn press(app: &mut MuxApp, plane: Plane, x: i32, y: i32, button: u8) {
@@ -370,5 +372,200 @@ pub(crate) fn snapshot(app: &mut MuxApp) {
         app.toast = Some(Toast::info(format!("{}{name}", app.t("已保存 ", "Saved "))));
     } else {
         app.toast = Some(Toast::error(app.t("截图失败", "Screenshot failed")));
+    }
+}
+
+/// How long the native hook gets to report a press before the poll takes over.
+const POLL_GRACE: Duration = Duration::from_millis(80);
+
+/// Extra grace before a silent drag (press seen, moves missing) is adopted.
+const POLL_ADOPT: Duration = Duration::from_millis(120);
+/// A gesture younger than this can still be live; older ones are leftovers.
+const POLL_STALE: Duration = Duration::from_secs(3);
+
+/// State for the cursor-polling fallback.
+struct PollState {
+    /// Whether the message hook reported the press of the current cycle.
+    hook_press: bool,
+    /// Whether the physical left button was down on the previous frame.
+    button_down: bool,
+    /// When the current press stops waiting for the native hook.
+    deadline: Instant,
+    /// Whether the current gesture was synthesised from the cursor poll.
+    synthetic: bool,
+    /// Hook move events seen while the button is held.
+    moves_while_down: u32,
+}
+
+fn poll_state() -> &'static Mutex<PollState> {
+    static STATE: OnceLock<Mutex<PollState>> = OnceLock::new();
+    STATE.get_or_init(|| {
+        Mutex::new(PollState {
+            button_down: false,
+            deadline: Instant::now(),
+            synthetic: false,
+            moves_while_down: 0,
+            hook_press: false,
+        })
+    })
+}
+
+fn lock<T>(mutex: &'static Mutex<T>) -> MutexGuard<'static, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Counts hook moves that happen while the left button is held.
+fn note_hook_event(event: &MouseEvent) {
+    if matches!(event, MouseEvent::Down { .. }) {
+        lock(poll_state()).hook_press = true;
+    }
+    let down_now = crate::video::childwin::left_button_down();
+    let mut state = lock(poll_state());
+    match event {
+        MouseEvent::Down { button: 0, .. } => {
+            // The hook handled the press; the poll stays out of the way.
+            state.synthetic = false;
+            state.moves_while_down = 0;
+        }
+        MouseEvent::Move { .. } if down_now => state.moves_while_down += 1,
+        _ => {}
+    }
+}
+
+/// Drives the scrub gesture from the OS cursor state.
+///
+/// libmpv recreates its renderer window whenever it re-initialises the video
+/// output (first load, resolution or pixel-format change, some seeks), and the
+/// window that owns the pointer can change while a drag is running too. Both
+/// cases used to swallow presses and moves, which is why dragging only worked
+/// "sometimes". Watching the physical button and the cursor position makes the
+/// gesture independent of which window currently receives the messages.
+/// Replays a click that only the polling loop saw: press + release in place,
+/// so the click-vs-drag logic in `release` decides between play/pause and a
+/// zero-length scrub.
+fn synthetic_tap(app: &mut MuxApp, ctx: &egui::Context) {
+    if app.gesture.is_some() {
+        return;
+    }
+    let Some((sx, sy)) = crate::video::childwin::cursor_pos() else {
+        return;
+    };
+    let Some((plane, cx, cy)) = app.media.plane_at_screen(sx, sy) else {
+        return;
+    };
+    {
+        let s = lock(poll_state());
+        crate::diag!(
+            "[poll] synthetic tap ({cx},{cy}) hook_press={} synthetic={} button_down={}",
+            s.hook_press,
+            s.synthetic,
+            s.button_down
+        );
+    }
+    press(app, plane, cx, cy, 0);
+    release(app);
+    ctx.request_repaint();
+}
+
+fn poll_fallback(app: &mut MuxApp, ctx: &egui::Context) {
+    // Only trust the poll while the player owns the foreground: otherwise a
+    // click on whatever window covers the picture would scrub it.
+    // The only trustworthy signal: the window under the pointer belongs to
+    // this process. A window can be "foreground" while another one covers it,
+    // so focus alone is not enough.
+    let owns_pointer = crate::video::childwin::cursor_pos()
+        .is_some_and(|(sx, sy)| crate::video::childwin::hit_test_owns(sx, sy));
+    if !owns_pointer {
+        if let Some((sx, sy)) = crate::video::childwin::cursor_pos() {
+            let (pid, class) = crate::video::childwin::hit_test_debug(sx, sy);
+            crate::diag!(
+                "[poll] skip own={} focused={} hit_pid={pid} class={class}",
+                owns_pointer,
+                app.media.app_is_foreground()
+            );
+        }
+        let mut state = lock(poll_state());
+        state.button_down = false;
+        state.synthetic = false;
+        return;
+    }
+    let (down, tapped) = crate::video::childwin::left_button_state();
+    let now = Instant::now();
+    let mut state = lock(poll_state());
+
+    if down && !state.button_down {
+        state.button_down = true;
+        if app
+            .gesture
+            .as_ref()
+            .is_some_and(|d| d.began.elapsed() > POLL_STALE)
+        {
+            crate::diag!("[poll] dropping stale gesture");
+            app.gesture = None;
+            app.scrub = None;
+        }
+        state.deadline = now + POLL_GRACE;
+        state.moves_while_down = 0;
+        state.synthetic = false;
+    } else if !down && state.button_down {
+        state.button_down = false;
+        let hook_press = std::mem::replace(&mut state.hook_press, false);
+        let synthetic = std::mem::replace(&mut state.synthetic, false);
+        // `synthetic_tap` locks the same state: never hold the guard here.
+        drop(state);
+        // A release the hook never reported would otherwise leave the gesture
+        // stuck forever.
+        if app.gesture.is_some() {
+            release(app);
+            ctx.request_repaint();
+        } else if !synthetic && !hook_press {
+            // The poll saw a press but the gesture never started (released
+            // inside the grace window): treat it as a plain click.
+            synthetic_tap(app, ctx);
+        }
+        return;
+    }
+
+    if !down {
+        // A tap that started and ended between two polls still counts as a
+        // click, so play/pause keeps working when the hooks missed the press.
+        let hook_press = std::mem::replace(&mut state.hook_press, false);
+        drop(state);
+        if tapped && app.gesture.is_none() && !hook_press {
+            synthetic_tap(app, ctx);
+        }
+        return;
+    }
+
+    if app.gesture.is_none() {
+        if now < state.deadline {
+            return;
+        }
+        if let Some((sx, sy)) = crate::video::childwin::cursor_pos()
+            && let Some((plane, cx, cy)) = app.media.plane_at_screen(sx, sy)
+        {
+            state.synthetic = true;
+            crate::diag!("[poll] synthetic press ({cx},{cy})");
+            press(app, plane, cx, cy, 0);
+            ctx.request_repaint();
+        }
+        return;
+    }
+
+    // Press seen by the hook, but it stopped reporting movement: take over.
+    if !state.synthetic && state.moves_while_down == 0 && now >= state.deadline + POLL_ADOPT {
+        state.synthetic = true;
+        crate::diag!("[poll] adopt stalled gesture");
+    }
+    if state.synthetic {
+        if let Some((sx, sy)) = crate::video::childwin::cursor_pos()
+            && let Some((plane, cx, cy)) = app.media.plane_at_screen(sx, sy)
+            && app.gesture.as_ref().is_some_and(|d| d.plane == plane)
+        {
+            drag_to(app, ctx, cx, cy);
+        }
+        ctx.request_repaint();
     }
 }

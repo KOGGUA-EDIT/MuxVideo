@@ -27,16 +27,18 @@ use windows_sys::Win32::Graphics::Gdi::{
     ValidateRect,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, CallWindowProcW, CreateWindowExW, DefWindowProcW,
-    DestroyWindow, EnumChildWindows, EnumWindows, GWLP_WNDPROC, GetClientRect,
-    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, HMENU, HWND_TOP, IDC_ARROW,
-    IsWindow, LoadCursorW, MA_NOACTIVATE, RegisterClassW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-    WM_CAPTURECHANGED, WM_ERASEBKGND, WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_NCDESTROY, WM_PAINT, WM_RBUTTONDBLCLK, WM_RBUTTONDOWN, WM_RBUTTONUP, WNDCLASSW, WNDPROC,
-    WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_VISIBLE,
+    DestroyWindow, EnumChildWindows, EnumWindows, GWLP_WNDPROC, GetClassNameW, GetClientRect,
+    GetCursorPos, GetForegroundWindow, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
+    GetWindowThreadProcessId, HMENU, HWND_TOP, IDC_ARROW, IsWindow, LoadCursorW, MA_NOACTIVATE,
+    RegisterClassW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, WM_CAPTURECHANGED, WM_ERASEBKGND,
+    WM_LBUTTONDBLCLK, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MBUTTONDBLCLK, WM_MBUTTONDOWN, WM_MBUTTONUP,
+    WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_NCDESTROY, WM_PAINT, WM_RBUTTONDBLCLK,
+    WM_RBUTTONDOWN, WM_RBUTTONUP, WNDCLASSW, WNDPROC, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
+    WS_VISIBLE, WindowFromPoint,
 };
 use windows_sys::core::BOOL;
 
@@ -196,6 +198,124 @@ pub fn map_point(from: i64, to: i64, x: i32, y: i32) -> Option<(i32, i32)> {
         if ScreenToClient(to, &mut point) == 0 {
             return None;
         }
+    }
+    Some((point.x, point.y))
+}
+
+/// Whether `hwnd` is the foreground window.
+pub fn is_foreground(hwnd: i64) -> bool {
+    let hwnd = hwnd as usize as HWND;
+    if hwnd.is_null() {
+        return false;
+    }
+    // SAFETY: no pointers involved; the call only reads global state.
+    let foreground = unsafe { GetForegroundWindow() };
+    !foreground.is_null() && foreground == hwnd
+}
+
+/// Whether the window under a screen point belongs to this process.
+///
+/// Used by the pointer-polling fallback: it must not scrub when the click is
+/// meant for another application that happens to sit above the picture.
+/// Debug helper: `(pid, class)` of the window under a screen point.
+pub fn hit_test_debug(sx: i32, sy: i32) -> (u32, String) {
+    // SAFETY: read-only queries.
+    let hit = unsafe { WindowFromPoint(POINT { x: sx, y: sy }) };
+    if hit.is_null() {
+        return (0, "<null>".to_owned());
+    }
+    let mut pid = 0u32;
+    // SAFETY: `pid` is a valid out pointer.
+    unsafe { GetWindowThreadProcessId(hit, &mut pid) };
+    let mut buf = [0u16; 128];
+    // SAFETY: buffer length is passed alongside the pointer.
+    let len = unsafe { GetClassNameW(hit, buf.as_mut_ptr(), buf.len() as i32) };
+    let class = String::from_utf16_lossy(&buf[..len.max(0) as usize]);
+    (pid, class)
+}
+
+pub fn hit_test_owns(sx: i32, sy: i32) -> bool {
+    // SAFETY: pure read-only Win32 queries.
+    let hit = unsafe { WindowFromPoint(POINT { x: sx, y: sy }) };
+    if hit.is_null() {
+        return false;
+    }
+    let mut pid = 0u32;
+    // SAFETY: `pid` is a valid out pointer.
+    unsafe { GetWindowThreadProcessId(hit, &mut pid) };
+    pid != 0 && pid == std::process::id()
+}
+
+/// Current pointer position in screen coordinates.
+pub fn cursor_pos() -> Option<(i32, i32)> {
+    let mut point = POINT { x: 0, y: 0 };
+    // SAFETY: `point` is stack storage owned by the caller.
+    let ok = unsafe { GetCursorPos(&mut point) };
+    if ok == 0 {
+        None
+    } else {
+        Some((point.x, point.y))
+    }
+}
+
+/// Whether the physical left mouse button is held down right now.
+///
+/// Polling the button state is the fallback for the cases where the native
+/// hook misses a press (the renderer can recreate its window at any time).
+/// Samples the physical left button.
+///
+/// Returns `(down, pressed_since_last_call)`. The second flag comes from the
+/// low bit of `GetAsyncKeyState`, which the system sets when the key went down
+/// since the previous sample - that catches fast taps that start *and* end
+/// between two polls.
+pub fn left_button_state() -> (bool, bool) {
+    // SAFETY: read-only query, no pointers.
+    let state = unsafe { GetAsyncKeyState(i32::from(VK_LBUTTON)) } as u16;
+    (state & 0x8000 != 0, state & 0x0001 != 0)
+}
+
+pub fn left_button_down() -> bool {
+    // SAFETY: no pointers involved; the call only reads global key state.
+    let state = unsafe { GetAsyncKeyState(VK_LBUTTON as i32) };
+    (state as u16 & 0x8000) != 0
+}
+
+/// Screen rectangle `(x, y, w, h)` of a window, in screen coordinates.
+pub fn window_rect(hwnd: i64) -> Option<(i32, i32, i32, i32)> {
+    let hwnd = hwnd as usize as HWND;
+    if hwnd.is_null() {
+        return None;
+    }
+    let mut rect = RECT {
+        left: 0,
+        top: 0,
+        right: 0,
+        bottom: 0,
+    };
+    // SAFETY: `rect` is stack storage; `hwnd` is checked to be non-null.
+    let ok = unsafe { GetWindowRect(hwnd, &mut rect) };
+    if ok == 0 {
+        return None;
+    }
+    Some((
+        rect.left,
+        rect.top,
+        (rect.right - rect.left).max(0),
+        (rect.bottom - rect.top).max(0),
+    ))
+}
+
+/// Maps a screen point into `hwnd`'s client coordinates.
+pub fn screen_to_client(hwnd: i64, x: i32, y: i32) -> Option<(i32, i32)> {
+    let hwnd = hwnd as usize as HWND;
+    if hwnd.is_null() {
+        return None;
+    }
+    let mut point = POINT { x, y };
+    // SAFETY: `point` is stack storage and `hwnd` is non-null.
+    let ok = unsafe { ScreenToClient(hwnd, &mut point) };
+    if ok == 0 {
+        return None;
     }
     Some((point.x, point.y))
 }
@@ -487,7 +607,16 @@ unsafe extern "system" fn enum_child(hwnd: HWND, lparam: LPARAM) -> BOOL {
 ///
 /// [`ChildWindow::create`] calls this automatically, so applications normally
 /// never need to. Installing twice for one handle is a no-op.
+/// Escape hatch: `MUXVIDEO_NO_HOOKS=1` disables the message hooks so the
+/// pointer-polling fallback is the only input path (useful for diagnosis).
+pub fn hooks_disabled() -> bool {
+    std::env::var_os("MUXVIDEO_NO_HOOKS").is_some()
+}
+
 pub fn install_input_hook(hwnd: i64) {
+    if hooks_disabled() {
+        return;
+    }
     if hwnd == 0 {
         return;
     }

@@ -40,6 +40,10 @@ const HOOK_SCAN_INTERVAL: Duration = Duration::from_millis(400);
 /// Physical pixel rectangle.
 type PxRect = (i32, i32, i32, i32);
 
+/// Signature of the last layout that was written to the native windows,
+/// used to keep the debug log quiet unless something actually changed.
+type LayoutSig = (PxRect, PxRect, Option<PxRect>, Option<PxRect>, PxRect);
+
 /// Source metadata shown next to the compare controls and in the inspector.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct MediaInfo {
@@ -79,7 +83,7 @@ impl MediaInfo {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(crate) enum Plane {
     A,
     B,
@@ -111,6 +115,8 @@ struct Surface {
     children: Vec<i64>,
     /// Rounded-pill region radius; `> 0` for the wipe grip, `0` for planes.
     round: i32,
+    /// Last clip rectangle, kept so the diagnostics log can show it.
+    clip_rect: Option<PxRect>,
 }
 
 impl Surface {
@@ -122,6 +128,7 @@ impl Surface {
             visible: false,
             children: Vec::new(),
             round: 0,
+            clip_rect: None,
         }
     }
 
@@ -134,6 +141,7 @@ impl Surface {
             if !self.children.contains(&child) {
                 crate::video::childwin::install_input_hook(child);
                 self.children.push(child);
+                crate::diag!("[hooks] plane hwnd={} hooked child={child}", self.hwnd);
             }
         }
         // Drop handles the renderer destroyed so the list cannot grow forever.
@@ -205,6 +213,8 @@ pub(crate) struct Media {
     pub file_b: Option<PathBuf>,
 
     /// Resolution / fps / codec, filled in after each FileLoaded.
+    /// Last layout signature that was written to the diagnostics log.
+    logged_layout: Option<LayoutSig>,
     pub meta_a: Option<MediaInfo>,
     pub meta_b: Option<MediaInfo>,
 
@@ -235,6 +245,7 @@ impl Default for Media {
             last_hook_scan: Instant::now() - HOOK_SCAN_INTERVAL,
             grip_style: None,
             drift: 0.0,
+            logged_layout: None,
         }
     }
 }
@@ -244,6 +255,7 @@ impl Media {
     fn ensure_native(&mut self) -> bool {
         if self.container.is_none() {
             let Some(parent) = find_window_by_title(WINDOW_TITLE) else {
+                crate::diag!("[stage] ensure_native: no toplevel window yet");
                 return false;
             };
             match ChildWindow::create(parent, 0x4D56_0001, "muxvideo-stage") {
@@ -254,6 +266,7 @@ impl Media {
         if !self.planes_ready {
             let stage = self.stage_hwnd();
             if stage == 0 {
+                crate::diag!("[stage] ensure_native: container has no hwnd");
                 return false;
             }
             let ok = [Plane::A, Plane::B]
@@ -296,6 +309,7 @@ impl Media {
         if hwnd == 0 {
             anyhow::bail!("视频平面句柄无效");
         }
+        crate::diag!("[stage] spawn player plane={plane:?} wid={hwnd}");
         let player = lib.new_player(hwnd, opts)?;
         // Only the A plane carries audio; B is a visual reference and playing
         // both would merely double the sound with a slight echo.
@@ -485,6 +499,23 @@ impl Media {
         self.plane_a.clip(a_clip);
         self.plane_b.clip(b_clip);
         self.grip.place(grip_rect);
+        let signature = (
+            self.plane_a.rect,
+            self.plane_b.rect,
+            self.plane_a.clip_rect,
+            self.plane_b.clip_rect,
+            self.grip.rect,
+        );
+        if self.logged_layout != Some(signature) {
+            self.logged_layout = Some(signature);
+            crate::diag!(
+                "[stage] a={:?} b={:?} clip_a={:?} clip_b={:?} grip={grip_rect:?}",
+                a_rect,
+                b_rect,
+                a_clip,
+                b_clip
+            );
+        }
         if grip_rect.is_some()
             && let Some(win) = &self.grip.window
         {
@@ -613,6 +644,45 @@ impl Media {
         } else {
             None
         }
+    }
+
+    /// Whether the player toplevel currently owns the keyboard focus.
+    ///
+    /// The cursor-polling fallback only runs then: otherwise a click on another
+    /// window that happens to sit above the picture would scrub the video.
+    pub fn app_is_foreground(&self) -> bool {
+        find_window_by_title(WINDOW_TITLE).is_some_and(crate::video::childwin::is_foreground)
+    }
+
+    /// Hit-tests a screen point against the visible planes.
+    ///
+    /// Returns the plane plus the point in that plane's client coordinates.
+    /// Used by the cursor-polling fallback, which does not depend on the
+    /// renderer windows forwarding their mouse messages to us.
+    pub fn plane_at_screen(&self, sx: i32, sy: i32) -> Option<(Plane, i32, i32)> {
+        for plane in [Plane::A, Plane::B] {
+            let surface = match plane {
+                Plane::A => &self.plane_a,
+                Plane::B => &self.plane_b,
+            };
+            if !surface.visible || surface.rect.2 <= 0 || surface.rect.3 <= 0 {
+                continue;
+            }
+            let hwnd = surface.hwnd;
+            if hwnd == 0 {
+                continue;
+            }
+            let Some((x, y, w, h)) = crate::video::childwin::window_rect(hwnd) else {
+                continue;
+            };
+            if sx < x || sy < y || sx >= x + w || sy >= y + h {
+                continue;
+            }
+            if let Some((cx, cy)) = crate::video::childwin::screen_to_client(hwnd, sx, sy) {
+                return Some((plane, cx, cy));
+            }
+        }
+        None
     }
 
     /// Client size of a plane in physical pixels.

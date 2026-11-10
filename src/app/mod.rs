@@ -2,6 +2,7 @@
 
 mod bars;
 mod controls;
+pub mod diag;
 pub mod i18n;
 pub mod icon;
 pub mod icons;
@@ -92,6 +93,8 @@ pub struct MuxApp {
     frame_dressed: bool,
     /// Which `apply_modern_frame` flavour the window currently uses.
     frame_immersive: bool,
+    /// Last known window rectangle, for change logging.
+    last_viewport: Option<egui::Rect>,
     /// Start of the flicker clock (CompareMode::Blink).
     blink_clock: Instant,
     /// Immersive playback: chrome hidden, picture owns the window.
@@ -155,9 +158,15 @@ impl MuxApp {
             pending: Vec::new(),
             frame_dressed: false,
             frame_immersive: false,
+            last_viewport: None,
             blink_clock: Instant::now(),
             immersive: false,
         };
+        crate::diag!(
+            "[boot] version={} exe={:?}",
+            env!("CARGO_PKG_VERSION"),
+            std::env::current_exe().ok()
+        );
         app.palette = Palette::from_seed(app.settings.seed_color(), app.settings.scheme());
         crate::ui::install_style(&cc.egui_ctx, &app.palette);
         let _ = palette_scheme;
@@ -564,6 +573,7 @@ impl MuxApp {
             return;
         }
         self.immersive = on;
+        crate::diag!("[state] immersive -> {on} (fullscreen cmd sent)");
         // Borderless fullscreen still leaves the taskbar on top for windows that
         // are not topmost, which shows as a strip along the bottom edge; keep
         // the picture window above it while the chrome is hidden.
@@ -686,6 +696,12 @@ impl MuxApp {
         };
         ctx.set_cursor_icon(cursor);
         if ctx.input(|i| i.pointer.primary_pressed()) {
+            crate::diag!(
+                "[window] begin resize {dir:?} at ({:.0},{:.0}) content={:?}",
+                pointer.x,
+                pointer.y,
+                rect
+            );
             ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
         }
     }
@@ -864,6 +880,20 @@ impl eframe::App for MuxApp {
         let pending = std::mem::take(&mut self.pending);
         for (path, target) in pending {
             self.open_path(path, target);
+        }
+
+        // Window geometry, only when it changes: the fastest way to see whether
+        // a resize actually happened.
+        {
+            let area = ctx.input(|i| i.viewport().outer_rect);
+            let frame = self.frame_no;
+            if self.last_viewport != area {
+                self.last_viewport = area;
+                crate::diag!(
+                    "[window] frame={frame} outer_rect={area:?} immersive={}",
+                    self.immersive
+                );
+            }
         }
 
         // Native window polish: rounded DWM corners normally, no border at all
