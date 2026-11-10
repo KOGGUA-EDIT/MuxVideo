@@ -594,14 +594,6 @@ impl Media {
         }
     }
 
-    /// True while any plane is still decoding a seek.
-    pub fn any_seeking(&self) -> bool {
-        [self.player_a.as_ref(), self.player_b.as_ref()]
-            .into_iter()
-            .flatten()
-            .any(|player| player.seeking())
-    }
-
     /// Keyframe seek: what a drag step uses, so a 4K VP9 file still follows
     /// the pointer. The exact landing happens on release (see `seek_all`).
     pub fn seek_all_fast(&self, secs: f64) {

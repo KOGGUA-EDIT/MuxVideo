@@ -395,15 +395,6 @@ impl MpvPlayer {
         self.cache.core_idle()
     }
 
-    /// True while a seek is still being decoded. Issuing another seek while
-    /// this is set cancels the one in flight, which is what made scrubbing a
-    /// 4K VP9 file look frozen: every move aborted the previous decode.
-    pub fn seeking(&self) -> bool {
-        self.get_property("seeking")
-            .map(|value| value == "yes" || value == "true")
-            .unwrap_or(false)
-    }
-
     /// File name currently reported by mpv (empty until a file loads).
     pub fn filename(&self) -> String {
         self.cache.filename()

@@ -38,10 +38,16 @@ const VOLUME_STEP: f64 = 4.0;
 /// milliseconds to decode a frame; asking for more than ~10 frames a second
 /// only queues cancels and makes the whole UI stutter, so the newest target is
 /// kept until this window has passed.
-/// Scrubbing seek spacing for 1080p and smaller: about 30 frames per second.
-const SEEK_MIN_GAP: Duration = Duration::from_millis(33);
+///
+/// Sub-4K pictures are not throttled at all: mpv coalesces seeks on its own and
+/// an artificial gap of even 33 ms is visible as stepping on 720p/1080p (the
+/// 0.1.33 behaviour was one seek per pointer move, and it felt smoother).
+const SEEK_MIN_GAP: Duration = Duration::ZERO;
 /// 4K needs far more decoding time per frame, so it scrubs at ~11 frames/s.
 const SEEK_MIN_GAP_4K: Duration = Duration::from_millis(90);
+/// How long the message hook has to be silent before the cursor poll takes over
+/// an in-flight drag. Below this the hook is demonstrably delivering moves.
+const HOOK_QUIET: u64 = 40;
 /// Zoom per wheel notch.
 const ZOOM_STEP: f64 = 0.10;
 const ZOOM_MIN: f64 = -2.0;
@@ -187,10 +193,17 @@ fn seam_near(app: &MuxApp, plane: Plane, x: i32, y: i32) -> bool {
 }
 
 /// Debug tap: enabled only when an `input-debug.flag` file sits next to the exe.
-fn debug_enabled() -> Option<std::path::PathBuf> {
-    let exe = std::env::current_exe().ok()?;
-    let dir = exe.parent()?.to_path_buf();
-    dir.join("input-debug.flag").exists().then_some(dir)
+///
+/// The answer is cached: this is called for every pointer move, and stat-ing the
+/// file system that often is measurable on its own.
+fn debug_enabled() -> Option<&'static std::path::PathBuf> {
+    static DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| {
+        let exe = std::env::current_exe().ok()?;
+        let dir = exe.parent()?.to_path_buf();
+        dir.join("input-debug.flag").exists().then_some(dir)
+    })
+    .as_ref()
 }
 
 fn debug_note(line: &str) {
@@ -207,7 +220,17 @@ fn debug_note(line: &str) {
     }
 }
 
+/// Same as `debug_note` but only pays for formatting when the tap is on.
+fn debug_note_args(args: std::fmt::Arguments<'_>) {
+    if debug_enabled().is_some() {
+        debug_note(&args.to_string());
+    }
+}
+
 fn debug_log(event: &crate::video::InputEvent) {
+    if debug_enabled().is_none() {
+        return;
+    }
     let line = match event.event {
         MouseEvent::Down { x, y, button } => format!("down {x} {y} b{button}"),
         MouseEvent::Move { x, y } => format!("move {x} {y}"),
@@ -270,7 +293,7 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
             } else {
                 target = target.max(0.0);
             }
-            debug_note(&format!(
+            debug_note_args(format_args!(
                 "scrub tx={tx} ppf={ppf:.2} fps={fps:.3} frame0={frame0:.3} target={target:.3} dur={duration:.3}"
             ));
             let moved_enough = (target - last_target).abs() >= 0.25 / fps;
@@ -278,18 +301,17 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
             if moved_enough || has_pending {
                 app.scrub = Some(target);
                 // Keyframe seek keeps a 4K VP9 file following the pointer; the
-                // exact frame is resolved in `release`. Only one seek may be in
-                // flight: issuing another while the current one is still
-                // decoding cancels it, and on 4K VP9 that made the drag crawl.
-                // The gap scales with the picture size: 720p can afford ~30
-                // frames per second of scrubbing, 4K cannot.
+                // exact frame is resolved in `release`. The gap is purely time
+                // based on purpose: asking mpv whether a seek is still running
+                // (`seeking` property) takes the core lock, and doing that on
+                // every pointer move stalled the UI thread on big files.
                 let gap = if app.media.max_height() >= 1800 {
                     SEEK_MIN_GAP_4K
                 } else {
                     SEEK_MIN_GAP
                 };
-                if app.media.any_seeking() || drag.seek_at.elapsed() < gap {
-                    crate::diag_verbose!("[scrub] hold target={target:.3} (seek in flight)");
+                if drag.seek_at.elapsed() < gap {
+                    crate::diag_verbose!("[scrub] hold target={target:.3} (waiting for gap)");
                     if let Some(drag) = app.gesture.as_mut() {
                         drag.pending_target = Some(target);
                     }
@@ -466,6 +488,8 @@ struct PollState {
     synthetic: bool,
     /// Hook move events seen while the button is held.
     moves_while_down: u32,
+    /// When the hook last delivered a move during the current gesture.
+    last_hook_move: Instant,
 }
 
 fn poll_state() -> &'static Mutex<PollState> {
@@ -477,6 +501,7 @@ fn poll_state() -> &'static Mutex<PollState> {
             synthetic: false,
             moves_while_down: 0,
             hook_press: false,
+            last_hook_move: Instant::now() - Duration::from_secs(10),
         })
     })
 }
@@ -500,7 +525,10 @@ fn note_hook_event(event: &MouseEvent) {
             state.synthetic = false;
             state.moves_while_down = 0;
         }
-        MouseEvent::Move { .. } if down_now => state.moves_while_down += 1,
+        MouseEvent::Move { .. } if down_now => {
+            state.moves_while_down += 1;
+            state.last_hook_move = Instant::now();
+        }
         _ => {}
     }
 }
@@ -562,6 +590,17 @@ fn poll_fallback(app: &mut MuxApp, ctx: &egui::Context) {
     if app.gesture.is_some() {
         let (down, _) = crate::video::childwin::left_button_state();
         if down {
+            // The hook already turns every move into a drag step. Only step in
+            // when it has gone quiet (renderer window recreated, or the message
+            // went to a window we cannot see): otherwise each pointer movement
+            // would be processed twice and the drag feels worse, not better.
+            let hook_quiet = {
+                let state = lock(poll_state());
+                state.last_hook_move.elapsed() >= Duration::from_millis(HOOK_QUIET)
+            };
+            if !hook_quiet {
+                return;
+            }
             let hit = crate::video::childwin::cursor_pos()
                 .and_then(|(sx, sy)| app.media.plane_at_screen_lenient(sx, sy));
             if let Some((plane, cx, cy)) = hit
