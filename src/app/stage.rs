@@ -226,6 +226,11 @@ pub(crate) struct Media {
     preview_fill: bool,
     /// Frame currently painted into `preview`, if any.
     preview_frame: Option<u64>,
+    /// Last preview that was painted, kept as a fallback so the overlay
+    /// never goes blank in the middle of a gesture.
+    preview_last: Option<(u64, std::sync::Arc<crate::video::childwin::PreviewFrame>)>,
+    /// When the gesture started (used to throttle the debug log).
+    preview_since: Option<Instant>,
 
     pub file_a: Option<PathBuf>,
     pub file_b: Option<PathBuf>,
@@ -262,6 +267,8 @@ impl Default for Media {
             last_grab: Instant::now() - Duration::from_secs(1),
             preview_fill: false,
             preview_frame: None,
+            preview_last: None,
+            preview_since: None,
             file_a: None,
             file_b: None,
             meta_a: None,
@@ -399,7 +406,7 @@ impl Media {
     ///
     /// Called once per UI frame. `busy` is true while the user drags, which
     /// makes the sampler follow the pointer instead of the playback position.
-    pub fn cache_tick(&mut self, playing: bool, scrubbing: bool) {
+    pub fn cache_tick(&mut self, playing: bool, scrubbing: bool, scrub_target: Option<u64>) {
         if self.grabber.is_none() {
             self.grabber = Some(Grabber::spawn());
         }
@@ -419,8 +426,10 @@ impl Media {
             );
         }
 
+        // While dragging, sample the frame under the pointer: that is the only
+        // region the user looks at, and the cache must cover it densely.
         let interval = if scrubbing {
-            Duration::from_millis(140)
+            Duration::from_millis(90)
         } else if playing {
             Duration::from_millis(220)
         } else {
@@ -433,13 +442,16 @@ impl Media {
             return;
         };
         let fps = self.meta_a.as_ref().map(|meta| meta.fps).unwrap_or(30.0);
-        let frame = (player.time_pos().max(0.0) * fps).round() as u64;
+        let frame = match scrub_target {
+            Some(target) => target,
+            None => (player.time_pos().max(0.0) * fps).round() as u64,
+        };
         self.last_grab = Instant::now();
         let Some(grabber) = &self.grabber else {
             return;
         };
         if self.cache_a.get(frame).is_none() {
-            grabber.request(&player, frame);
+            grabber.request(&player, frame, fps);
         }
     }
 
@@ -451,19 +463,10 @@ impl Media {
 
     /// Paints the cached frame closest to `frame` over `plane`.
     ///
-    /// Returns true when something was painted, so the caller can keep the
-    /// gesture alive even though libmpv has not caught up yet.
+    /// Once the overlay is up it never goes blank mid-gesture: when the exact
+    /// neighbourhood is missing the previous image stays on screen instead of
+    /// dropping back to libmpv, which is what made dragging blink.
     pub fn show_cached(&mut self, plane: Plane, frame: u64, window: u64) -> bool {
-        if self.preview_frame == Some(frame) && self.preview.visible {
-            return true;
-        }
-        let cache = match plane {
-            Plane::A => &mut self.cache_a,
-            Plane::B => &mut self.cache_b,
-        };
-        let Some(image) = cache.get(frame).or_else(|| cache.nearest(frame, window)) else {
-            return false;
-        };
         let Some(hwnd) = self.preview.window.as_ref().map(ChildWindow::hwnd) else {
             return false;
         };
@@ -471,10 +474,34 @@ impl Media {
         if rect.2 <= 0 || rect.3 <= 0 {
             return false;
         }
-        crate::video::childwin::set_preview_frame(hwnd, image);
+        let cache = match plane {
+            Plane::A => &mut self.cache_a,
+            Plane::B => &mut self.cache_b,
+        };
+        let picked = match cache.get(frame) {
+            Some(image) => Some((frame, image)),
+            None => cache
+                .nearest(frame, window)
+                .or_else(|| self.preview_last.clone()),
+        };
+        let Some((painted, image)) = picked else {
+            return false;
+        };
+        // Distance between the pointer and the painted frame. A large value
+        // means the overlay is showing a visibly different moment.
+        static SHOWS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        if SHOWS.fetch_add(1, std::sync::atomic::Ordering::Relaxed).is_multiple_of(16) {
+            crate::diag!(
+                "[cache] show target={frame} painted={painted} delta={}",
+                painted as i64 - frame as i64
+            );
+        }
+        crate::video::childwin::set_preview_frame(hwnd, image.clone());
         let was_visible = self.preview.visible;
         self.preview.place(Some(rect));
-        self.preview_frame = Some(frame);
+        self.preview_frame = Some(painted);
+        self.preview_last = Some((painted, image));
+        self.preview_since.get_or_insert_with(Instant::now);
         // Only restack when the overlay appears: doing it every drag step makes
         // the window take the top of the z-order again and again, which looks
         // like the picture is blinking.
@@ -486,7 +513,10 @@ impl Media {
 
     /// Hides the cached-frame overlay (libmpv is showing the real frame again).
     pub fn hide_preview(&mut self) {
-        if self.preview_frame.take().is_some() {
+        let had_frame = self.preview_frame.take().is_some();
+        self.preview_last = None;
+        self.preview_since = None;
+        if had_frame {
             if let Some(hwnd) = self.preview.window.as_ref().map(ChildWindow::hwnd) {
                 crate::video::childwin::clear_preview_frame(hwnd);
             }

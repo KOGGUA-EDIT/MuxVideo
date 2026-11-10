@@ -30,6 +30,9 @@ const DRAG_SLOP: i32 = 5;
 /// Our own double-click window. The system one is ~500 ms, which turned quick
 /// play/pause toggles into fullscreen toggles.
 const DOUBLE_CLICK_MS: u64 = 250;
+/// Minimum gap between two seeks during a drag; shorter intervals cancel the
+/// decode that is already running.
+const SEEK_MIN_GAP: std::time::Duration = std::time::Duration::from_millis(55);
 /// Two clicks further apart than this (physical pixels) are not a double click.
 const DOUBLE_CLICK_PX: i32 = 12;
 /// Volume per wheel notch, in mpv volume units.
@@ -43,7 +46,7 @@ const ZOOM_MAX: f64 = 3.0;
 const HANDLE_GRAB: f32 = 22.0;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode {
+pub(crate) enum Mode {
     /// Left press that drags the playhead frame by frame (RV Player style).
     Scrub,
     /// Right press that moves the wipe split line.
@@ -53,12 +56,14 @@ enum Mode {
 }
 
 pub(crate) struct Drag {
-    plane: Plane,
-    mode: Mode,
+    pub(crate) plane: Plane,
+    pub(crate) mode: Mode,
     start: (i32, i32),
     last: (i32, i32),
     /// Playhead when the press happened, in seconds.
     frame0: f64,
+    /// Last time a seek was issued during this gesture.
+    seek_at: std::time::Instant,
     /// Last seek target, so we do not flood mpv with duplicate seeks.
     last_target: f64,
     moved: bool,
@@ -146,6 +151,7 @@ fn press(app: &mut MuxApp, plane: Plane, x: i32, y: i32, button: u8) {
         start: (x, y),
         last: (x, y),
         frame0,
+        seek_at: Instant::now(),
         last_target: frame0,
         moved: false,
         began: Instant::now(),
@@ -256,22 +262,30 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
                 "scrub tx={tx} ppf={ppf:.2} fps={fps:.3} frame0={frame0:.3} target={target:.3} dur={duration:.3}"
             ));
             if (target - last_target).abs() >= 0.25 / fps {
+                // Seeks are throttled: firing one per pointer step cancels the
+                // decode that is already in flight, so libmpv never lands
+                // anywhere and the picture trails the pointer. One seek every
+                // ~55 ms lets each decode finish and the preview follow.
+                let seek_due = drag.seek_at.elapsed() >= SEEK_MIN_GAP;
                 app.scrub = Some(target);
-                app.media.seek_all(target);
-                // Show the closest decoded frame we already have so the drag
-                // never freezes while libmpv replays from a keyframe.
                 let frame = crate::app::state::frame_at(target, fps);
-                let window = (fps * 1.5).round().max(1.0) as u64;
-                app.media.show_cached(plane, frame, window);
+                let window = (fps * 0.35).round().max(1.0) as u64;
+                if seek_due {
+                    app.media.seek_all(target);
+                    app.media.show_cached(plane, frame, window);
+                }
                 let total = crate::app::state::frame_at(duration, fps);
                 app.toast = Some(crate::app::state::Toast::info(format!(
                     "{} {} / {}",
                     app.t("帧", "Frame"),
-                    crate::app::state::frame_at(target, fps),
+                    frame,
                     total
                 )));
                 if let Some(drag) = app.gesture.as_mut() {
                     drag.last_target = target;
+                    if seek_due {
+                        drag.seek_at = std::time::Instant::now();
+                    }
                 }
             }
         }
@@ -499,12 +513,17 @@ fn poll_fallback(app: &mut MuxApp, ctx: &egui::Context) {
     let owns_pointer = crate::video::childwin::cursor_pos()
         .is_some_and(|(sx, sy)| crate::video::childwin::hit_test_owns(sx, sy));
     if !owns_pointer {
-        if let Some((sx, sy)) = crate::video::childwin::cursor_pos() {
+        // Log only the transition: this runs every frame, and writing a line
+        // per frame filled the diagnostic log with tens of megabytes.
+        static LAST_SKIP: std::sync::atomic::AtomicIsize = std::sync::atomic::AtomicIsize::new(-1);
+        let owned = app.media.app_is_foreground() as isize;
+        if LAST_SKIP.swap(owned, std::sync::atomic::Ordering::Relaxed) != owned
+            && let Some((sx, sy)) = crate::video::childwin::cursor_pos()
+        {
             let (pid, class) = crate::video::childwin::hit_test_debug(sx, sy);
             crate::diag!(
-                "[poll] skip own={} focused={} hit_pid={pid} class={class}",
+                "[poll] skip own={} focused={owned} hit_pid={pid} class={class}",
                 owns_pointer,
-                app.media.app_is_foreground()
             );
         }
         let mut state = lock(poll_state());

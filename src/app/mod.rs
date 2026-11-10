@@ -1221,8 +1221,17 @@ impl MuxApp {
     /// every drag step, which read as flickering.
     fn pump_scrub_cache(&mut self) {
         let playing = self.is_playing();
-        let scrubbing = self.scrub.is_some();
-        self.media.cache_tick(playing, scrubbing);
+        // The gesture is what matters, not `scrub`: that one is only written
+        // when the pointer has travelled far enough to cross a frame boundary,
+        // so using it here made the overlay flicker on small drag steps.
+        let scrubbing = self
+            .gesture
+            .as_ref()
+            .is_some_and(|drag| drag.mode == input::Mode::Scrub);
+        let target = self
+            .scrub
+            .map(|secs| crate::app::state::frame_at(secs, self.fps()));
+        self.media.cache_tick(playing, scrubbing, target);
         if !scrubbing {
             self.media.hide_preview();
         }

@@ -62,13 +62,13 @@ impl FrameCache {
     }
 
     /// Closest cached frame to `frame`, but only within `window` frames.
-    pub fn nearest(&self, frame: u64, window: u64) -> Option<Arc<PreviewFrame>> {
+    pub fn nearest(&self, frame: u64, window: u64) -> Option<(u64, Arc<PreviewFrame>)> {
         let entry = self
             .entries
             .iter()
             .min_by_key(|entry| entry.frame.abs_diff(frame))?;
         if entry.frame.abs_diff(frame) <= window {
-            Some(Arc::clone(&entry.image))
+            Some((entry.frame, Arc::clone(&entry.image)))
         } else {
             None
         }
@@ -107,6 +107,7 @@ fn image_stride(image: &PreviewFrame) -> usize {
 struct GrabJob {
     player: Arc<MpvPlayer>,
     frame: u64,
+    fps: f64,
 }
 
 /// Result queue item: frame number plus its decoded preview bitmap.
@@ -135,7 +136,7 @@ impl Grabber {
             .name("muxvideo-scrub-grab".to_owned())
             .spawn(move || {
                 while let Ok(job) = job_rx.recv() {
-                    let grabbed = grab(&job.player);
+                    let grabbed = grab(&job.player, job.fps);
                     if let Ok(mut pending_frames) = thread_pending.lock()
                         && let Some(index) = pending_frames
                             .iter()
@@ -143,9 +144,9 @@ impl Grabber {
                     {
                         pending_frames.remove(index);
                     }
-                    if let Some(image) = grabbed {
+                    if let Some((key, image)) = grabbed {
                         if let Ok(mut queue) = thread_results.lock() {
-                            queue.push_back((job.frame, image));
+                            queue.push_back((key, image));
                             // A stalled UI must not grow this without bound.
                             while queue.len() > 4 {
                                 queue.pop_front();
@@ -166,7 +167,7 @@ impl Grabber {
     }
 
     /// Queues a grab of the frame currently on screen; duplicates are ignored.
-    pub fn request(&self, player: &Arc<MpvPlayer>, frame: u64) {
+    pub fn request(&self, player: &Arc<MpvPlayer>, frame: u64, fps: f64) {
         if !self.live.load(std::sync::atomic::Ordering::Relaxed) {
             return;
         }
@@ -184,6 +185,7 @@ impl Grabber {
         let _ = self.jobs.send(GrabJob {
             player: Arc::clone(player),
             frame,
+            fps,
         });
     }
 
@@ -205,10 +207,27 @@ impl Drop for Grabber {
     }
 }
 
-/// Grabs the current frame and prepares a downscaled BGRA preview.
-fn grab(player: &MpvPlayer) -> Option<Arc<PreviewFrame>> {
+/// Grabs the frame currently on screen and prepares a downscaled BGRA preview.
+///
+/// The key is the position libmpv *reports* around the readback rather than the
+/// frame that was requested: `screenshot-raw` always returns whatever the video
+/// output has presented, so labelling the bitmap with the requested number would
+/// put frames under wrong keys and make the overlay jump around during a drag.
+/// Samples taken while the position is moving (mid-seek) are dropped.
+fn grab(player: &MpvPlayer, fps: f64) -> Option<(u64, Arc<PreviewFrame>)> {
+    let before = player.time_pos();
     let raw = player.screenshot_raw()?;
-    to_preview(&raw)
+    let after = player.time_pos();
+    let fps = if fps.is_finite() && fps > 1.0 {
+        fps
+    } else {
+        30.0
+    };
+    if ((after - before).abs() * fps) > 6.0 {
+        return None;
+    }
+    let frame = (before.max(0.0) * fps).round() as u64;
+    Some((frame, to_preview(&raw)?))
 }
 
 /// Converts a `RawFrame` into a top-down BGRA buffer for GDI blitting.
