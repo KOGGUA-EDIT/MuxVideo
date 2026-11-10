@@ -22,36 +22,41 @@ use eframe::egui::{self, Color32, CornerRadius, Mesh, Rect, Response, Sense, Sha
 
 use crate::ui::Palette;
 
-/// How tall the track band is (Material 3 Expressive uses 8 px, not 4 px).
-const TRACK_HEIGHT: f32 = 10.0;
+/// Track thickness. Material 3 linear indicators use a 4 dp stroke; 6 px keeps
+/// the wave readable on a desktop-sized seek bar without looking like a hairline.
+const TRACK_HEIGHT: f32 = 6.0;
 /// Radius of the rounded track ends, in whole pixels.
-const TRACK_RADIUS_PX: u8 = 5;
+const TRACK_RADIUS_PX: u8 = 3;
+/// Gap between the active indicator and the remaining track (M3: 4 dp).
+const TRACK_GAP: f32 = 6.0;
+/// Radius of the stop indicator dot at the end of the track (M3: 4 dp wide).
+const STOP_RADIUS: f32 = 3.0;
 /// Horizontal track inset: leaves room for the handle's 40 px state layer.
 const TRACK_INSET: f32 = 10.0;
 /// Height reserved by the widget; fits the 40 px state layer.
 const HEIGHT: f32 = 40.0;
 
-/// Peak wave displacement from the track centre line.
-const WAVE_AMPLITUDE: f32 = 4.5;
-/// Distance between wave crests.
-const WAVE_LENGTH: f32 = 46.0;
-/// Scroll speed of the wave, in pixels per second.
-const PHASE_SPEED: f32 = 30.0;
+/// Peak wave displacement from the track centre line (M3: 3.5 dp crest).
+const WAVE_AMPLITUDE: f32 = 4.0;
+/// Distance between wave crests (M3 determinate linear: 28 dp).
+const WAVE_LENGTH: f32 = 28.0;
+/// Scroll speed of the wave: one wavelength per second, as M3 does.
+const PHASE_SPEED: f32 = 28.0;
 /// Seconds the wave takes to morph from flat to wavy (and back).
 const WAVE_ANIMATION: f32 = 0.30;
 /// Horizontal distance over which the wave ramps in from the flat start.
-const WAVE_RAMP_IN: f32 = 12.0;
+const WAVE_RAMP_IN: f32 = 8.0;
 /// Horizontal distance over which the wave tapers out before the handle.
-const WAVE_TAPER: f32 = 18.0;
+const WAVE_TAPER: f32 = 10.0;
 /// Upper bound on mesh segments, so a very wide track cannot explode.
 const MAX_SEGMENTS: usize = 1024;
 
 /// Handle body height.
-const HANDLE_HEIGHT: f32 = 22.0;
+const HANDLE_HEIGHT: f32 = 18.0;
 /// Handle body width at rest.
-const HANDLE_WIDTH: f32 = 4.0;
+const HANDLE_WIDTH: f32 = 3.0;
 /// Handle body width while hovered, focused or dragged.
-const HANDLE_WIDTH_ACTIVE: f32 = 6.0;
+const HANDLE_WIDTH_ACTIVE: f32 = 5.0;
 /// Handle corner radius, in whole pixels (a pill, never a circle).
 const HANDLE_RADIUS_PX: u8 = 2;
 /// Radius of the round hover / focus / drag state layer.
@@ -191,21 +196,22 @@ fn wavy_slider_impl(
 
     if t <= EPSILON {
         painter.rect_filled(track, CornerRadius::same(TRACK_RADIUS_PX), track_color);
-    } else if track.right() - active_end > EPSILON {
-        // The left edge is hidden under the handle, so only the far end needs
-        // the round cap.
-        let radius = CornerRadius {
-            nw: 0,
-            ne: TRACK_RADIUS_PX,
-            sw: 0,
-            se: TRACK_RADIUS_PX,
-        };
-        painter.rect_filled(
-            Rect::from_min_max(egui::pos2(active_end, track.top()), track.max),
-            radius,
-            track_color,
-        );
+    } else {
+        // M3 Expressive leaves a small gap between the active indicator and the
+        // rest of the track, and both pieces are round-capped.
+        let inactive =
+            Rect::from_min_max(egui::pos2(active_end + TRACK_GAP, track.top()), track.max);
+        if inactive.width() > EPSILON {
+            painter.rect_filled(inactive, CornerRadius::same(TRACK_RADIUS_PX), track_color);
+        }
     }
+
+    // The stop indicator sits at the very end of the track.
+    painter.circle_filled(
+        egui::pos2(track.right() - STOP_RADIUS, track.center().y),
+        STOP_RADIUS,
+        Palette::alpha(track_color, 0.85),
+    );
 
     if t > EPSILON {
         let phase = wave_phase(ui);
