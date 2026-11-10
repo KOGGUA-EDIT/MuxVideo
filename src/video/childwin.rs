@@ -21,10 +21,10 @@ use windows_sys::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    BLACK_BRUSH, BeginPaint, ClientToScreen, CreatePen, CreateRectRgn, CreateRoundRectRgn,
-    CreateSolidBrush, DeleteObject, EndPaint, FillRect, GetDC, GetStockObject, InvalidateRect,
-    LineTo, MoveToEx, PAINTSTRUCT, ReleaseDC, ScreenToClient, SelectObject, SetWindowRgn,
-    ValidateRect,
+    BLACK_BRUSH, BeginPaint, ClientToScreen, CombineRgn, CreatePen, CreateRectRgn,
+    CreateRoundRectRgn, CreateSolidBrush, DeleteObject, EndPaint, FillRect, GetDC, GetStockObject,
+    InvalidateRect, LineTo, MoveToEx, PAINTSTRUCT, RGN_OR, ReleaseDC, ScreenToClient, SelectObject,
+    SetWindowRgn, ValidateRect,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
@@ -1090,6 +1090,68 @@ impl ChildWindow {
         Ok(Self { hwnd })
     }
 
+    /// Shapes the wipe grip: a one-pixel divider plus a rounded pill centred on
+    /// it.
+    ///
+    /// `vertical` orients the divider (a vertical seam for a left/right split).
+    /// `long`/`short` are the pill's dimensions; `short` is also its corner
+    /// radius, so the pill stays fully rounded.
+    pub fn set_grip_region(&self, vertical: bool, long: i32, short: i32) {
+        let mut rect = RECT::default();
+        // SAFETY: client rect query on a live HWND; `RECT` is a plain struct.
+        let (w, h) = unsafe {
+            if GetClientRect(self.hwnd, &mut rect) != 0 {
+                (rect.right - rect.left, rect.bottom - rect.top)
+            } else {
+                (0, 0)
+            }
+        };
+        if w <= 0 || h <= 0 {
+            return;
+        }
+        let cx = w / 2;
+        let cy = h / 2;
+        // A vertical seam gets a tall pill, a horizontal seam a wide one.
+        let (pill_w, pill_h) = if vertical {
+            (short, long)
+        } else {
+            (long, short)
+        };
+        // SAFETY: regions are plain GDI objects created and released here; on
+        // success SetWindowRgn takes ownership of the combined one.
+        unsafe {
+            let line = if vertical {
+                CreateRectRgn(cx, 0, cx + 1, h)
+            } else {
+                CreateRectRgn(0, cy, w, cy + 1)
+            };
+            if line.is_null() {
+                return;
+            }
+            let pill = CreateRoundRectRgn(
+                cx - pill_w / 2,
+                cy - pill_h / 2,
+                cx + pill_w / 2 + 1,
+                cy + pill_h / 2 + 1,
+                pill_h.min(pill_w),
+                pill_h.min(pill_w),
+            );
+            if pill.is_null() {
+                DeleteObject(line);
+                return;
+            }
+            if CombineRgn(line, line, pill, RGN_OR) == 0 {
+                DeleteObject(pill);
+                DeleteObject(line);
+                return;
+            }
+            DeleteObject(pill);
+            if SetWindowRgn(self.hwnd, line, 1) == 0 {
+                DeleteObject(line);
+            }
+        }
+    }
+
     /// Applies the rounded-pill region matching the current size.
     ///
     /// Called after every resize so the handle keeps its Material shape
@@ -1175,7 +1237,13 @@ unsafe extern "system" fn wndproc(
     lparam: LPARAM,
 ) -> LRESULT {
     match message {
-        WM_ERASEBKGND => 1,
+        // The class background brush is black, so let it erase: a resized or
+        // exposed surface then repaints opaque instead of showing whatever was
+        // behind it (which looked like the window going transparent).
+        WM_ERASEBKGND => {
+            // SAFETY: default handling uses the class brush registered above.
+            unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+        }
         WM_PAINT => {
             // SAFETY: standard paint sequence; every acquired DC is released and
             // the update region is validated before returning.

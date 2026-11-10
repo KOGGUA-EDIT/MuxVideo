@@ -379,11 +379,7 @@ pub(super) fn rail(ui: &mut Ui, app: &mut MuxApp) {
             .max_rect(foot)
             .layout(Layout::top_down(Align::Center)),
         |ui| {
-            let palette_resp = icon_button(ui, &p, 40.0, false, icons::palette);
-            if palette_resp.clicked() {
-                app.rail = RailTab::Settings;
-            }
-            ui.add_space(2.0);
+            ui.add_space(42.0);
             ui.painter().text(
                 pos2(foot.center().x, foot.min.y + 74.0),
                 Align2::CENTER_CENTER,

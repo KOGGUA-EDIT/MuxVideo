@@ -37,6 +37,11 @@ const SYNC_INTERVAL: Duration = Duration::from_millis(250);
 /// subclassing, so a recreated renderer cannot silently swallow the pointer.
 const HOOK_SCAN_INTERVAL: Duration = Duration::from_millis(400);
 
+/// Wipe grip pill: long/short side in physical pixels. The short side also
+/// doubles as the corner radius, so the pill reads as fully rounded.
+const GRIP_PILL_LONG: i32 = 64;
+const GRIP_PILL_SHORT: i32 = 20;
+
 /// Physical pixel rectangle.
 type PxRect = (i32, i32, i32, i32);
 
@@ -272,7 +277,7 @@ impl Media {
             let ok = [Plane::A, Plane::B]
                 .into_iter()
                 .all(|plane| self.surface_mut(plane).ensure(stage, plane).is_ok());
-            self.grip.round = 9;
+            self.grip.round = 0; // shaped by `set_grip_region`, not a plain pill
             let grip_ok = ChildWindow::create_grip(stage, 0x4D56_0005, "muxvideo-grip")
                 .map(|win| {
                     self.grip.hwnd = win.hwnd();
@@ -446,10 +451,11 @@ impl Media {
                         let split = (wipe.clamp(0.0, 1.0)
                             * if axis == SplitAxis::Horizontal { w } else { h } as f32)
                             .round() as i32;
-                        // Leave a hole at the seam so the egui-painted divider
-                        // and its drag handle show through (native planes sit
-                        // above egui, so the handle can only live in the gap).
-                        const SEAM: i32 = 10;
+                        // The seam is a single pixel: plane A owns the column to
+                        // the left of `split`, plane B owns it from `split` on.
+                        // The grip window draws the 1 px divider and its pill on
+                        // top of the two planes, so nothing is left unpainted.
+                        const SEAM: i32 = 0;
                         let before = (split - SEAM).max(0);
                         let after =
                             (split + SEAM).min(if axis == SplitAxis::Horizontal { w } else { h });
@@ -457,17 +463,14 @@ impl Media {
                             SplitAxis::Horizontal => {
                                 a_clip = Some((0, 0, before, h));
                                 b_clip = Some((after, 0, (w - after).max(0), h));
-                                // 18 x 56 pill centred on the seam.
-                                let cx = split - 9;
-                                let cy = (h - 56) / 2;
-                                grip_rect = Some((cx, cy.max(0), 18, 56.min(h)));
+                                // Full-height strip: the grip paints a 1 px line
+                                // plus a pill in the middle of it.
+                                grip_rect = Some((split - 10, 0, 20, h));
                             }
                             SplitAxis::Vertical => {
                                 a_clip = Some((0, 0, w, before));
                                 b_clip = Some((0, after, w, (h - after).max(0)));
-                                let cx = (w - 56) / 2;
-                                let cy = split - 9;
-                                grip_rect = Some((cx.max(0), cy, 56.min(w), 18));
+                                grip_rect = Some((0, split - 10, w, 20));
                             }
                         }
                     }
@@ -519,6 +522,14 @@ impl Media {
         if grip_rect.is_some()
             && let Some(win) = &self.grip.window
         {
+            // Shape the grip: one-pixel divider plus a rounded pill in the
+            // middle of it. Doing this here keeps the region in sync with the
+            // seam whenever the split moves or the axis flips.
+            win.set_grip_region(
+                axis == SplitAxis::Horizontal,
+                GRIP_PILL_LONG,
+                GRIP_PILL_SHORT,
+            );
             // Draw the handle over the planes, never behind them.
             win.bring_to_top();
         }
