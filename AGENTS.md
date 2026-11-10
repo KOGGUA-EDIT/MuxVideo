@@ -92,3 +92,21 @@ exe 会继承 **Low 完整性**。Windows 把 Low 完整性的可执行文件当
 - 线性波浪进度条参数：轨道 6px、波长 28px、振幅 4px、1 波长/秒、活动段与剩余轨道间隙 6px、
   末端停止点 4px、两端圆角（见 `src/ui/wavy.rs` 顶部常量，对应 M3 linear wavy indicator 的
   4dp 描边 / 3.5dp 振幅 / 28dp 波长 / 4dp gap / 4dp stop indicator）。
+
+## 发布流程（0.1.28 起）
+
+- 打安装包与便携包：`pwsh -NoProfile -File tools\build_setup.ps1`
+  - 内部分四步：release 构建 `muxvideo.exe` → 拷到 `assets\payload\`（exe / `libmpv-2.dll` / `README.txt`）→
+    `cargo build --release --bin installer --features payload`（把 payload 用 `include_bytes!` 嵌进安装器）→
+    输出 `dist\MuxVideo-Setup-<ver>.exe`（约 118 MB）与 `dist\MuxVideo-Portable-<ver>.zip`（约 45 MB）。
+  - `assets\payload` 与 `dist` 都在 `.gitignore` 里，**不要提交**（GitHub 单文件上限 100 MB）。
+- 安装器：`src/bin/installer.rs`，写 `%LOCALAPPDATA%\Programs\MuxVideo`（可改），创建桌面/开始菜单
+  快捷方式（PowerShell `WScript.Shell`），写 `HKCU\...\Uninstall\MuxVideo` 卸载项；安装动画至少
+  显示 1.3 s（`MIN_INSTALL_SCREEN`），免得一闪而过。
+- 本机安装：`pwsh -NoProfile -File tools\deploy.ps1`（release → dist → 签名 → 装到 `D:\ruanjian\MuxVideo`）。
+- GitHub：仓库 `KOGGUA-EDIT/MuxVideo`（master）。token 从 `git credential fill` 取，**不要写进文件**。
+  发版用 REST API：`POST /repos/KOGGUA-EDIT/MuxVideo/releases`（tag `v<ver>`）拿到 `id`，再
+  `POST https://uploads.github.com/repos/.../releases/<id>/assets?name=<file>` 上传两个产物。
+- 历史坑：早先把 `tools\mpv`（含 118 MB `mpv.exe`、107 MB `libmpv-2.dll`）误提交进 git，push 被
+  GitHub 拒绝（>100 MB）。已用 `git filter-branch --index-filter 'git rm -r --cached --ignore-unmatch tools/mpv'`
+  重写历史并 gc 清理（`.git` 从 93 MiB 降到 4.6 MiB）。**以后先确认 `.gitignore` 再第一次 push。**
