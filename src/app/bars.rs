@@ -474,20 +474,28 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
                 // Space still free after the left hand chips; the sync read-out
                 // and the mode hint only appear when they will not collide.
                 let room = ui.available_width();
-                if icon_button(ui, &p, 34.0, false, icons::camera)
-                    .on_hover_text(app.t("截图：把当前帧存到「图片」文件夹（S）", "Save the current frame to Pictures (S)"))
-                    .clicked()
-                {
+                let cam = icon_button(ui, &p, 34.0, false, icons::camera);
+                if cam.hovered() {
+                    app.hover_hint = Some(app.t(
+                        "截图：把当前帧存到「图片」文件夹（S）",
+                        "Save the current frame to Pictures (S)",
+                    ));
+                }
+                if cam.clicked() {
                     super::input::snapshot(app);
                 }
                 // 适应 / 填充: letterbox vs crop-to-fill the stage.
                 {
                     let fill = app.settings.fill;
                     let fill_label = if fill { app.t("填充", "Fill") } else { app.t("适应", "Fit") };
-                    if controls::chip(ui, &p, fill_label, fill)
-                        .on_hover_text(app.t("适应＝完整显示（可能有黑边）；填充＝铺满画面（裁掉溢出）", "Fit shows the whole frame (may letterbox); Fill crops to cover the stage"))
-                        .clicked()
-                    {
+                    let fill_chip = controls::chip(ui, &p, fill_label, fill);
+                    if fill_chip.hovered() {
+                        app.hover_hint = Some(app.t(
+                            "适应＝完整显示（可能有黑边）；填充＝铺满画面（裁掉溢出）",
+                            "Fit shows the whole frame (may letterbox); Fill crops to cover the stage",
+                        ));
+                    }
+                    if fill_chip.clicked() {
                         app.settings.fill = !fill;
                         app.settings_dirty = true;
                         app.view_dirty();
@@ -813,28 +821,31 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
                 );
             };
             tall(ui, 34.0, &mut |ui| {
-                if icon_button(ui, &p, 34.0, false, icons::step_back)
-                    .on_hover_text(app.t("上一帧（,）", "Previous frame (,)"))
-                    .clicked()
-                {
+                let prev = icon_button(ui, &p, 34.0, false, icons::step_back);
+                if prev.hovered() {
+                    app.hover_hint = Some(app.t("上一帧（,）", "Previous frame (,)"));
+                }
+                if prev.clicked() {
                     app.step_frame(false);
                 }
             });
             ui.add_space(6.0);
             tall(ui, 48.0, &mut |ui| {
-                if play_button(ui, app)
-                    .on_hover_text(app.t("播放 / 暂停（空格）", "Play / pause (Space)"))
-                    .clicked()
-                {
+                let play = play_button(ui, app);
+                if play.hovered() {
+                    app.hover_hint = Some(app.t("播放 / 暂停（空格）", "Play / pause (Space)"));
+                }
+                if play.clicked() {
                     app.toggle_play();
                 }
             });
             ui.add_space(6.0);
             tall(ui, 34.0, &mut |ui| {
-                if icon_button(ui, &p, 34.0, false, icons::step_forward)
-                    .on_hover_text(app.t("下一帧（.）", "Next frame (.)"))
-                    .clicked()
-                {
+                let next = icon_button(ui, &p, 34.0, false, icons::step_forward);
+                if next.hovered() {
+                    app.hover_hint = Some(app.t("下一帧（.）", "Next frame (.)"));
+                }
+                if next.clicked() {
                     app.step_frame(true);
                 }
             });
@@ -883,9 +894,17 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
                 );
             }
 
+            // Hover hints for the controls next to the stage: a floating
+            // tooltip would be drawn under the native video planes, so the
+            // hint is painted here instead, inside the transport card.
+            if let Some(hint) = app.hover_hint {
+                ui.add_space(10.0);
+                ui.label(egui::RichText::new(hint).size(11.0).color(p.primary));
+            }
+
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 // Volume mute toggle.
-                if icon_button(
+                let mute = icon_button(
                     ui,
                     &p,
                     34.0,
@@ -895,10 +914,11 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
                     } else {
                         icons::volume
                     },
-                )
-                .on_hover_text(app.t("静音（M）", "Mute (M)"))
-                .clicked()
-                {
+                );
+                if mute.hovered() {
+                    app.hover_hint = Some(app.t("静音（M）", "Mute (M)"));
+                }
+                if mute.clicked() {
                     app.settings.muted = !app.settings.muted;
                     app.apply_volume();
                 }
@@ -910,10 +930,11 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
                 ui.add_space(8.0);
 
                 // Loop toggle.
-                if icon_button(ui, &p, 34.0, app.settings.loop_file, icons::loop_icon)
-                    .on_hover_text(app.t("循环播放", "Loop"))
-                    .clicked()
-                {
+                let loop_btn = icon_button(ui, &p, 34.0, app.settings.loop_file, icons::loop_icon);
+                if loop_btn.hovered() {
+                    app.hover_hint = Some(app.t("循环播放", "Loop"));
+                }
+                if loop_btn.clicked() {
                     app.settings.loop_file = !app.settings.loop_file;
                     app.apply_loop();
                 }
@@ -921,10 +942,11 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
 
                 // Speed chip cycles through the common rates.
                 let speed_label = format!("{}×", trim_speed(app.settings.speed));
-                if controls::chip(ui, &p, &speed_label, app.settings.speed != 1.0)
-                    .on_hover_text(app.t("播放速度", "Playback speed"))
-                    .clicked()
-                {
+                let speed_chip = controls::chip(ui, &p, &speed_label, app.settings.speed != 1.0);
+                if speed_chip.hovered() {
+                    app.hover_hint = Some(app.t("播放速度", "Playback speed"));
+                }
+                if speed_chip.clicked() {
                     let idx = SPEEDS
                         .iter()
                         .position(|s| (*s - app.settings.speed).abs() < 0.001)

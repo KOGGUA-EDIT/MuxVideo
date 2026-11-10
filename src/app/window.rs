@@ -61,3 +61,72 @@ pub fn apply_modern_frame(hwnd: i64, immersive: bool) {
         );
     }
 }
+
+/// Blow the window up to the monitor it currently sits on.
+///
+/// Immersive playback deliberately avoids `ViewportCommand::Fullscreen`: the
+/// OS fullscreen state machine re-applies the DWM border and rounded corners
+/// whenever it is entered on top of a maximized window, which is what showed up
+/// as a light groove and white dots along the bottom edge. Covering the monitor
+/// with plain window geometry is deterministic and leaves the DWM attributes
+/// we set in [`apply_modern_frame`] alone.
+pub fn cover_monitor(hwnd: i64) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::Graphics::Gdi::{
+        GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+    };
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        HWND_TOP, SW_RESTORE, SWP_FRAMECHANGED, SWP_NOACTIVATE, SetWindowPos, ShowWindow,
+    };
+
+    if hwnd == 0 {
+        return;
+    }
+    let hwnd = hwnd as HWND;
+    // SAFETY: `hwnd` is our own top-level window; the monitor helpers take it
+    // by value and only fill the structure we hand them.
+    unsafe {
+        // A maximized window keeps its restore rect; leave that state first so
+        // the geometry below is what the user actually sees.
+        let _ = ShowWindow(hwnd, SW_RESTORE);
+        let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        let mut info: MONITORINFO = std::mem::zeroed();
+        info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if GetMonitorInfoW(monitor, &mut info) != 0 {
+            let r = info.rcMonitor;
+            let _ = SetWindowPos(
+                hwnd,
+                HWND_TOP,
+                r.left,
+                r.top,
+                r.right - r.left,
+                r.bottom - r.top,
+                SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+        }
+    }
+}
+
+/// Put the window back at an exact physical-pixel rectangle.
+pub fn restore_rect(hwnd: i64, x: i32, y: i32, w: i32, h: i32) {
+    use windows_sys::Win32::Foundation::HWND;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        HWND_TOP, SWP_FRAMECHANGED, SWP_NOACTIVATE, SetWindowPos,
+    };
+
+    if hwnd == 0 {
+        return;
+    }
+    // SAFETY: our own window; the rectangle comes from a viewport report.
+    unsafe {
+        let _ = SetWindowPos(
+            hwnd as HWND,
+            HWND_TOP,
+            x,
+            y,
+            w.max(320),
+            h.max(200),
+            SWP_NOACTIVATE | SWP_FRAMECHANGED,
+        );
+    }
+}

@@ -93,6 +93,14 @@ pub struct MuxApp {
     frame_dressed: bool,
     /// Which `apply_modern_frame` flavour the window currently uses.
     frame_immersive: bool,
+    /// Outer rectangle (in points) to restore when leaving immersive playback.
+    saved_outer: Option<(f32, f32, f32, f32)>,
+    /// Whether the window was maximized before going immersive.
+    saved_maximized: bool,
+    /// Hint shown in the transport bar for the widget under the pointer.
+    /// Tooltips cannot be used next to the stage: the native video planes sit
+    /// above egui and swallow anything drawn over the picture.
+    pub(super) hover_hint: Option<&'static str>,
     /// Last known window rectangle, for change logging.
     last_viewport: Option<egui::Rect>,
     /// Start of the flicker clock (CompareMode::Blink).
@@ -158,6 +166,9 @@ impl MuxApp {
             pending: Vec::new(),
             frame_dressed: false,
             frame_immersive: false,
+            saved_outer: None,
+            saved_maximized: false,
+            hover_hint: None,
             last_viewport: None,
             blink_clock: Instant::now(),
             immersive: false,
@@ -573,7 +584,39 @@ impl MuxApp {
             return;
         }
         self.immersive = on;
-        crate::diag!("[state] immersive -> {on} (fullscreen cmd sent)");
+        crate::diag!("[state] immersive -> {on} (window geometry switched)");
+        // The picture must reach every screen edge. Instead of asking the OS for
+        // fullscreen (which re-applies the DWM frame when entered from a
+        // maximized window, leaving a groove and corner artefacts), the window
+        // is simply resized to its monitor with the decorations already off.
+        let ppp = ctx.pixels_per_point();
+        if let Some(hwnd) = crate::video::childwin::find_window_by_title(stage::WINDOW_TITLE) {
+            if on {
+                self.saved_outer = ctx.input(|i| {
+                    i.viewport()
+                        .outer_rect
+                        .map(|r| (r.min.x, r.min.y, r.width(), r.height()))
+                });
+                self.saved_maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+                window::cover_monitor(hwnd);
+            } else if self.saved_maximized {
+                // A maximized window being "restored" must stay maximized, or it
+                // ends up slightly larger than the work area in the normal state.
+                ctx.send_viewport_cmd(egui::ViewportCommand::Maximized(true));
+                self.saved_outer = None;
+            } else if let Some((x, y, w, h)) = self.saved_outer.take() {
+                window::restore_rect(
+                    hwnd,
+                    (x * ppp).round() as i32,
+                    (y * ppp).round() as i32,
+                    (w * ppp).round() as i32,
+                    (h * ppp).round() as i32,
+                );
+            }
+            window::apply_modern_frame(hwnd, on);
+            self.frame_immersive = on;
+            self.frame_dressed = true;
+        }
         // Borderless fullscreen still leaves the taskbar on top for windows that
         // are not topmost, which shows as a strip along the bottom edge; keep
         // the picture window above it while the chrome is hidden.
@@ -582,7 +625,6 @@ impl MuxApp {
         } else {
             egui::WindowLevel::Normal
         }));
-        ctx.send_viewport_cmd(egui::ViewportCommand::Fullscreen(on));
         ctx.send_viewport_cmd(egui::ViewportCommand::CursorVisible(true));
         ctx.request_repaint();
     }
