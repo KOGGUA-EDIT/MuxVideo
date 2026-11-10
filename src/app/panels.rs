@@ -789,6 +789,23 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                     .size(11.0)
                     .color(p.outline),
                 );
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    ui.label(
+                        egui::RichText::new(app.t("项目主页", "Project page"))
+                            .size(12.0)
+                            .color(p.on_surface_variant),
+                    );
+                    ui.add_space(8.0);
+                    let link = egui::RichText::new(crate::app::GITHUB_URL)
+                        .size(12.0)
+                        .color(p.primary)
+                        .underline();
+                    if ui.link(link).clicked() {
+                        ui.ctx()
+                            .open_url(egui::OpenUrl::new_tab(crate::app::GITHUB_URL));
+                    }
+                });
                 if let Some(err) = app.boot_error.clone() {
                     ui.add_space(6.0);
                     ui.label(egui::RichText::new(err).size(11.0).color(p.error));

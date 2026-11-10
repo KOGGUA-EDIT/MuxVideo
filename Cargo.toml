@@ -1,6 +1,6 @@
 [package]
 name = "muxvideo"
-version = "0.1.27"
+version = "0.1.28"
 edition = "2024"
 rust-version = "1.88"
 description = "MuxVideo — a Material You video comparison and viewer built on mpv"
@@ -21,6 +21,14 @@ path = "src/bin/mpv_probe.rs"
 [[bin]]
 name = "theme_showcase"
 path = "src/bin/theme_showcase.rs"
+
+[[bin]]
+name = "installer"
+path = "src/bin/installer.rs"
+
+[features]
+# Embeds the player and libmpv into the setup wizard (see tools/build_setup.ps1).
+payload = []
 
 [dependencies]
 anyhow = "1.0"

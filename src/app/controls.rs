@@ -104,6 +104,36 @@ pub fn pill_button(
     response
 }
 
+/// Text-only button: no fill, primary label, M3 state layer on hover.
+pub fn text_button(ui: &mut Ui, palette: &Palette, label: &str) -> Response {
+    let galley = ui.painter().layout_no_wrap(
+        label.to_owned(),
+        FontId::proportional(14.0),
+        palette.primary,
+    );
+    let size = vec2(galley.size().x + 28.0, 40.0);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let hover = ui
+        .ctx()
+        .animate_bool_with_time(response.id, response.hovered(), 0.12);
+    if hover > 0.01 {
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(20),
+            palette.primary.gamma_multiply(0.10 * hover),
+        );
+    }
+    ui.painter().galley(
+        pos2(
+            rect.center().x - galley.size().x * 0.5,
+            rect.center().y - galley.size().y * 0.5,
+        ),
+        galley,
+        palette.primary,
+    );
+    response
+}
+
 /// Segmented mode chip: filled when selected.
 pub fn chip(ui: &mut Ui, palette: &Palette, label: &str, selected: bool) -> Response {
     let galley = ui.painter().layout_no_wrap(

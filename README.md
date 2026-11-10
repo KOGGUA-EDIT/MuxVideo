@@ -1,197 +1,149 @@
 # MuxVideo
 
-基于 mpv（libmpv 0.39 进程内嵌入）的视频对比与查看器，Rust + eframe/egui 0.33，
-Material You（MD3）深/浅色主题，自绘 SVG 级矢量图标，无边框窗口。
+**用 Rust 写的双画面视频对比与查看器 —— 进程内 libmpv + Material You 界面。**
 
-![MuxVideo](docs/screenshot-pair.png)
+![主界面](docs/screenshot-single.png)
+
+做视频对比的人大概都有这个体验：开两个播放器，一边暂停一边拖进度，时间轴永远差几帧。
+MuxVideo 把两面画面塞进同一个窗口、同一个时间轴，逐帧对齐，专门给**剪辑、动画、调色、压制**这类需要「找差异」的活。
+
+- 单文件绿色运行，只需要一个 `libmpv-2.dll`，不用装 mpv / VLC / 解码包
+- A / B 两个画面共用一套播放控制，可并排、可划像、可闪烁
+- 画面里按住左键拖动 = **逐帧擦洗**，时间码精确到帧（`HH:MM:SS:FF`）
+- 界面是 Material You（MD3 Expressive）：动态配色、波浪进度条、分段控件滑动高亮
 
 ## 功能
 
-- **单画面查看**：A 面为主播放器，支持播放/暂停、±5s / ±10s 跳转、逐帧步进、倍速、音量、循环。
-- **A/B 对比**：两路 libmpv 实例各占一块原生子窗口，A 为 master、B 每 250ms 纠偏（阈值 80ms），
-  工具条实时显示 `同步 Δ±N ms`。
-- **并排**：左右 / 上下各占一半，中间留 2px 缝；B 默认静音避免双声道回声。
-- **划像**：两层全屏叠放，用 `SetWindowRgn` 把 B 裁到分界线右侧（或下方）；中间留一道 24px 的缝，缝里是一个**原生窗口做的药丸把手**（mpv 的渲染窗口盖在 egui 之上，所以把手不能用 egui 画），拖它就能挪分界。
-- **闪烁**：A / B 在同一位置、同一时间点每 0.45s 轮流显示，人眼对「闪一下动了的地方」极敏感，
-  最适合看磨皮、降噪、锐化、轻微位移这类改动。
-- **播放列表**：拖入多个视频自动填充，列表行内 A/B 按钮分配平面，双击载入 A，右键移出。
-- **逐帧擦洗**：在画面里按住左键左右拖，默认 **1 像素 = 1 帧**（设置页可调 1…100 px/帧），时间码显示 `HH:MM:SS:FF`，播放条另显 `帧 N / M`。
-- **进度条**：Material 3 Expressive 波浪轨道，播放时波形滚动，暂停时 0.3s 缓动回到平轨，末端是竖长方形药丸把手。
-- **截图**：工具条相机按钮或 `S`，把当前帧原分辨率存进「图片」文件夹（不含字幕 / OSD）。
-- **画面适配**：适应（完整显示留黑边）/ 填充（等比放大裁掉溢出）一键切换。
-- **设置页**：中/英双语切换、深浅色、8 个 MD3 种子色 + 任意 `#RRGGBB`、hwdec 策略、默认音量、擦洗灵敏度、列表显隐、对比模式说明、快捷键表。
-- 打开方式：命令行参数、拖放到窗口、Win32 文件对话框；`muxvideo a.mp4 b.mp4` 直接进对比。
+### 四种对比方式
 
-## 画面上的鼠标操作
+| 模式 | 说明 | 截图 |
+| --- | --- | --- |
+| 单画面 | 只看 A 面；B 面自动暂停省解码 | ![](docs/screenshot-single.png) |
+| 并排 | 左右或上下各占一半，同一时间点对比 | ![](docs/screenshot-pair.png) |
+| 划像 | 两面完全重叠，拖中间的把手即时对照 | ![](docs/screenshot-wipe.png) |
+| 闪烁 | 同位置轮流显示 A / B（0.45 s 一轮），抖动的地方一眼看出来 | ![](docs/screenshot-flicker.png) |
 
-视频区域盖着原生子窗口，普通 egui 事件收不到，所以输入分成两条路（都在 `src/app/input.rs`）：
+> 为什么没有「像素差值」模式？试过 mpv 的 `lavfi-complex`：
+> `[vid1][vid2]` 是**同一个文件的第 1/2 条视频轨**，不是两个文件，传两个文件会直接报
+> `Pad vid2 is not connected to anything.`。单实例 libmpv 做不了双文件混合，
+> 所以用「闪烁」代替 —— 修图、降噪、锐化时，闪烁比并排更容易发现差异。
 
-1. **消息钩子**：给视频平面以及 libmpv 自己创建的渲染子窗口都挂上 Win32 子类化
-   （`WM_LBUTTONDOWN` / `WM_MOUSEWHEEL` 等），每 400 ms 重新扫描一次子窗口，
-   这样 mpv 换片重建渲染窗口后钩子不会失效。
-2. **光标轮询兜底**：每帧用 `GetAsyncKeyState` + `GetCursorPos` 采样物理键鼠状态。
-   只要「指针下的窗口属于本进程」（`WindowFromPoint` + 进程号比对），按下沿超过 80 ms
-   仍没有起始手势、或手势开始了却收不到位移，就由轮询接管；连「按下和抬起都发生在两次
-   采样之间」的快点击也会补一次 click，所以不会出现「有时候点了没反应」。
+### 逐帧擦洗
 
-之所以要两条路：libmpv 在某些时机（换片、VO 重建）会重建自己的渲染窗口，那几百毫秒里
-按下/抬起可能被吞掉，表现出来就是「拖动时好时坏、切一下视频又好了」。轮询只在本进程
-窗口位于指针下时才生效，所以不会误伤盖在画面上的其它窗口。
+在画面里按住左键左右拖动：往左退帧、往右进帧，1 px = 1 帧（设置里可调 1–100 px/帧）。
+拖动时动画和声音跟着走，松手停在那一帧；时间码显示到帧，帧号同时给出 `帧 128 / 300`。
 
-映射到的动作：
+### 其他
 
-| 操作 | 动作 |
+- **同步**：A 为基准，B 漂移超过 80 ms 自动纠偏，工具条实时显示 `同步 Δ+0 ms`
+- **媒体信息**：分辨率、帧率、时长/总帧数、容器、视频/音频编码、码率、文件大小
+- **播放列表**：拖入多个文件、双击载入 A 面、右键移出；最近文件会自动记住
+- **截图**：`S` 或工具条相机按钮，把当前帧存到「图片」文件夹
+- **适应 / 填充**：完整显示（可能有黑边）或铺满画面（裁掉溢出）
+- **主题**：8 个种子色 + 深浅两套配色，改完全窗口跟着换
+- **中英双语**：设置页「语言」一键切换
+- **沉浸式全屏**：`F` / 双击画面，铺满整块屏幕并隐藏所有 UI；`Esc` 退出
+
+![设置页](docs/screenshot-settings.png)
+
+## 操作
+
+| 操作 | 作用 |
 | --- | --- |
-| 单击画面 | 播放 / 暂停 |
-| 按住左键拖动 | 逐帧擦洗：默认 **1 像素 = 1 帧**（设置页可调 1…100），向左退、向右进，拖动时自动暂停并显示 `帧 N / M`；按住 Shift 为 1/10 速 |
-| 拖分界把手（划像模式） | 缝中间那颗药丸就是把手，直接拖它；右键拖动画面也可以 |
-| 按住中键拖动 | 平移画面（`video-pan`），松手保留 |
-| 滚轮 | 音量 ±4%（画面不动） |
-| `Ctrl` + 滚轮 | 缩放画面（`video-zoom`，-2.0…3.0） |
-| 双击画面 | 全屏切换 |
+| 画面左键拖动 | 逐帧擦洗（左退右进） |
+| 画面左键单击 | 播放 / 暂停 |
+| 画面双击 | 进入 / 退出沉浸式全屏 |
+| 画面中键拖动 | 平移画面 |
+| 滚轮 / Ctrl+滚轮 | 音量 / 缩放 |
+| 划像把手拖动 | 移动分界线 |
+| 标题栏、导航栏、工具条空白 | 拖动窗口 |
+| 窗口边缘 | 缩放窗口（最大化时拖动边缘会先还原） |
 
-拖动擦洗时按「半帧」精度节流 seek，避免把解码器喂爆；播放条与时间码同步跟着走。
-音量 / 缩放 / 擦洗帧号会在播放条里闪一条 snackbar。
+| 按键 | 作用 |
+| --- | --- |
+| `Space` | 播放 / 暂停 |
+| `←` `→` / `J` `L` | 后退 / 前进 5 秒 / 10 秒 |
+| `,` `.` | 上一帧 / 下一帧 |
+| `↑` `↓` / `M` | 音量 / 静音 |
+| `0` | 重置平移与缩放 |
+| `1` `2` `3` `4` | 单画面 / 并排 / 划像 / 闪烁 |
+| `[` `]` | 划像分界微调 |
+| `S` | 截图 |
+| `Tab` | 显示 / 隐藏播放列表 |
+| `F` `Esc` | 全屏 / 退出全屏 |
 
-## 时间码
+## 安装
 
-速度条两端显示 `HH:MM:SS:FF`（FF 是帧号，按当前片的 fps 取整），播放条下方同时显示 `帧 N / M`，
-方便动画师、剪辑师按帧对齐。
+### 安装程序（推荐）
 
-## 媒体信息面板
+下载 `MuxVideo-Setup-<版本>.exe` 双击运行。安装向导是同一个 Material You 风格：
 
-在播放列表里选中一个文件，列表下方会出现「媒体信息」卡片：分辨率 / 像素格式、帧率、
-时长（`HH:MM:SS:FF` + 总帧数）、容器、视频编码、码率、音频（编码 / 声道 / 采样率）、文件大小、路径。
-信息来自 libmpv 的 `file-format`、`video-format`、`video-params/*`、`audio-params/*`、`duration`、
-`video-bitrate`、`file-size` 等属性；文件还没载入时只显示大小，载入 A / B 面后补齐。
-
-## 快捷键
-
-| 键 | 动作 | 键 | 动作 |
+| 欢迎 | 选项 | 安装中 | 完成 |
 | --- | --- | --- | --- |
-| 空格 | 播放 / 暂停 | `←` `→` | ±5 秒 |
-| `J` `L` | ±10 秒 | `,` `.` | 上一帧 / 下一帧 |
-| `↑` `↓` | 音量 ±5 | `M` | 静音 |
-| `1`–`4` | 单画面 / 并排 / 划像 / 闪烁 | `[` `]` | 分界 ±2% |
-| `S` | 截图当前帧到「图片」文件夹 | `0` | 重置平移 / 缩放 |
-| `Tab` | 播放列表显隐 | `F` | 全屏 |
-| `Home` | 回到开头 | `Esc` | 退出全屏 / 退出 |
+| ![](docs/installer-welcome.png) | ![](docs/installer-options.png) | ![](docs/installer-installing.png) | ![](docs/installer-done.png) |
 
-## 画面适配
+- 可自选安装位置（默认 `%LOCALAPPDATA%\Programs\MuxVideo`）
+- 可选是否创建桌面快捷方式（开始菜单快捷方式总是创建）
+- 装完可选立即启动
+- 会在「应用和功能」里登记卸载项，卸载时清理程序目录与快捷方式
 
-视频按原始比例放进预览区，默认「适应」——完整显示，遇到比例不符就留黑边（和播放器惯例一致）。
-工具条右侧的「适应 / 填充」chip 可以切换：**填充**会把画面等比放大到铺满预览区、裁掉溢出部分，
-一点黑边都不留。设置会跟着 `muxvideo.settings.json` 记住。
+### 便携版
 
-## 截图
+下载 `MuxVideo-Portable-<版本>.zip`，解压到任意目录，双击 `muxvideo.exe`。
+`muxvideo.exe` 与 `libmpv-2.dll` 必须在同一目录。
 
-工具条右侧的相机按钮（或 `S`）把当前帧用 mpv 的 `screenshot-to-file ... video` 存成 PNG，
-不带字幕和 OSD，落在 `%USERPROFILE%\Pictures\MuxVideo_<日期>-<时间>_帧<五位帧号>.png`。
+### 从源码构建
 
-## 运行
+需要 Rust 1.88+ 与 MSVC 或 w64devkit 工具链。
 
-```
-muxvideo.exe
-muxvideo.exe "D:\clipA.mp4" "D:\clipB.mp4"
+```bash
+cargo build --release --bin muxvideo
+# 产物：target/release/muxvideo.exe，旁边放一份 libmpv-2.dll
+pwsh -NoProfile -File tools/build_setup.ps1   # 生成安装包与便携包
 ```
 
-`libmpv-2.dll` 的查找顺序：环境变量 `MUXVIDEO_LIBMPV` → exe 同目录 → exe 同目录 `tools\mpv` →
-项目目录 `tools\mpv` → `D:\ruanjian\mpv\mpv.net-DW v2.1.0`。
+`libmpv-2.dll` 可以直接用 [mpv 官方 Windows 构建](https://github.com/shinchiro/mpv-winbuild-cmake/releases)
+里的 `libmpv-2.dll`，也可以用 [mpv.net](https://github.com/stax76/mpv.net) 发行版自带的。
 
-设置保存在 `%APPDATA%\MuxVideo\muxvideo.settings.json`（主题种子、模式、音量、最近列表、擦洗灵敏度等）。放在用户目录而不是 exe 旁边，是因为以前每个 exe 副本各有一份配置（装好的那份、`dist\` 里那份、临时目录那份），点了不同的快捷方式就会换一份配置，看起来像「设置自己掉回去了」。
+## 配置文件
 
-## 构建
-
-```powershell
-$env:RUSTUP_HOME='D:\ruanjian\rust-env\rustup'
-$env:CARGO_HOME='D:\app edit\Muxvideo\.cargo-home'   # 沙箱里 D:\ruanjian\rust-env\cargo 不可写
-$env:PATH='D:\ruanjian\rust-env\cargo\bin;D:\ruanjian\rust-env\w64devkit\bin;'+$env:PATH
-$env:CARGO_NET_OFFLINE='true'
-cargo build --offline --release
-```
-
-产物：`target\release\muxvideo.exe`，同目录放一份 `libmpv-2.dll`（或设 `MUXVIDEO_LIBMPV`）。
-
-## 发布目录
-
-`dist\` 里是可运行的最小集合，拷走整个目录即可运行：
-
-```
-dist/muxvideo.exe       # release 构建，windows 子系统，无控制台窗口（本地证书签名）
-dist/libmpv-2.dll       # libmpv 0.39（mpv.net-DW 发行版提供的 DLL）
-dist/README.txt         # 运行说明
-```
-
-`dist` 缺 `libmpv-2.dll` 时按上面的查找顺序兜底找本机 mpv 安装。
-
-### 安装在 D:\ruanjian\MuxVideo 并部署
-
-```powershell
-pwsh -NoProfile -ExecutionPolicy Bypass -File tools\deploy.ps1            # 构建 + 签名 + 安装
-pwsh -NoProfile -ExecutionPolicy Bypass -File tools\deploy.ps1 -SkipBuild # 只重装现有产物
-```
-
-脚本会：构建 release → 复制到 `dist\` 并签名 → 安装到 `D:\ruanjian\MuxVideo\` →
-把 exe/dll 的完整性级别从 Low 改回 Medium（需要时静默提权）。
-
-## 双击弹 SmartScreen 的原因（重要）
-
-DSH 的工作区目录（这里是 `D:\app edit\Muxvideo`）带 **Low Mandatory Level** 完整性标签，
-在里面构建/复制的 exe 会继承 **Low 完整性**。Windows 会把 Low 完整性的可执行文件当作
-“来自 Internet 的文件”，双击时弹 `Microsoft Defender SmartScreen 阻止了无法识别的应用启动`
-或 `打开文件 - 安全警告：无法验证发布者`。
-
-证据：`icacls` 显示工作区目录有 `Mandatory Label\Low Mandatory Level:(OI)(CI)(NW)`，
-`dist\muxvideo.exe` 也是 `Low Mandatory Level`；同样字节的 exe 拷到 `D:\ruanjian\MuxVideo\`
-或 `D:\app edit\mv4\`（无完整性标签 = Medium）双击就直接启动。
-
-处理办法（三种，任选）：
-
-1. **拷出工作区再运行**（推荐）：`tools\deploy.ps1` 会装到 `D:\ruanjian\MuxVideo\`，
-   桌面快捷方式也指向那里。
-2. **给产物改完整性级别**：管理员执行
-   `icacls "dist\muxvideo.exe" /setintegritylevel Medium`（dll 同理）。
-   注意每次重新构建都会继承回 Low，要再来一次。
-3. 本地代码签名证书（`CN=MuxVideo Local Dev`，thumbprint
-   `74CE54AFE8D9636E8635A7294D129390DA7877F6`，公钥在 `dist\MuxVideo-LocalDev.cer`，
-   已装入当前用户 Root + TrustedPublisher）只让对话框显示发布者名，**不能**单独消除弹窗 ——
-   根因是完整性级别，不是签名。
-
-不要试图把工作区目录本身改成 Medium：DSH 沙箱靠 Low 完整性做写限制（no-write-up），
-改高会让沙箱写工作区失败。
-
-
-## 结构
-
-```
-src/app/            外壳：布局、标题栏、导航栏、播放条、列表、设置、图标、窗口装饰
-src/app/stage.rs    原生子窗口层：container + A/B 两个平面、布局计算、裁剪、同步
-src/app/input.rs    原生鼠标手势层：点画面暂停、拖动逐帧擦洗、中键平移、滚轮音量、双击全屏
-src/mpv/            libmpv 动态加载、MpvPlayer（事件线程 + 属性缓存）、事件类型
-src/video/          Win32 子窗口封装（注册类、WndProc、SetWindowRgn 裁剪）
-src/ui/             MD3 动态配色（HCT 近似）、调色板角色、egui 样式、控件库
-tools/              探针与验证脚本（Python/Win32），不含运行时依赖
-```
-
-### 原生窗口层级
-
-```
-eframe toplevel (MuxVideo, winit/glow)
-└── muxvideo-stage        WS_CLIPCHILDREN，正好覆盖 egui 的 stage 矩形
-    ├── muxvideo-plane-a  ← libmpv 的 mpv 子窗口渲染到这里（wid）
-    └── muxvideo-plane-b
-```
-
-egui 只画 chrome，视频区域由原生子窗口承托，避免每帧把视频纹理拷进 egui。
+`%APPDATA%\MuxVideo\muxvideo.settings.json` —— 主题种子色、深浅色、语言、对比模式、
+音量、擦洗灵敏度、最近打开的文件。删掉即可恢复默认。
 
 ## 已知限制
 
-- 官方 `mpv.exe` 的 `--wid` 在 0.42 构建上无法创建窗口（`[vo/gpu/win32] unable to create window!`），
-  所以本项目只用 libmpv，不 shell out。
-- 没有逐像素差值模式：mpv 的 `lavfi-complex` 里 `[vid1]/[vid2]` 指同一文件的第 1/2 条视频轨，
-  不是播放列表里的两个文件，单实例无法把两个文件相减（实测报 `Pad vid2 is not connected to anything.`）。
-  要做真差值得先离线用 ffmpeg 合成，或用共享内存传帧，代价都不值得——对比用途上「闪烁」更直观。
-- 播放列表不写回磁盘，仅本次会话有效（最近文件会持久化）。
-- egui 画不出浮层到视频区域上，所以 snackbar（音量 / 缩放提示）画在播放条里，
-  设置页之外不显示浮动 toast。
-- 浅色主题下视频区域的黑边是 mpv 自己的画面底色（播放器惯例），不跟随主题。
+- 视频画面是**原生子窗口**叠在 egui 之上，所以画在画面区域的悬浮提示会被挡住
+  （提示统一画在播放条里）；
+- 窗口失去前台时，Windows 会吞掉拖动窗口的鼠标按住状态，本项目用「自己算窗口位置」绕开了
+  系统模态拖动，但极端情况下（拖动中切走焦点）仍可能停在原处；
+- 硬件解码默认 `auto-safe`（D3D11VA），个别驱动需要切到 `no`；
+- 只支持 Windows（原生子窗口 + DWM 圆角）。
+
+## 技术栈
+
+```
+egui / eframe 0.33   UI 与绘制（glow 后端）
+libmpv 0.39         进程内播放内核，--wid 嵌入 + 事件线程
+windows-sys 0.61    Win32 子窗口、区域裁剪、DWM、文件对话框
+```
+
+架构上分三层：
+
+1. `src/video` —— Win32 原生子窗口（`muxvideo-stage` / `muxvideo-plane-a|b` / `muxvideo-grip`），
+   负责位置、圆角、裁剪和鼠标事件钩子；
+2. `src/mpv` —— libmpv 动态加载、实例封装、事件轮询、属性读写；
+3. `src/app` —— 布局、手势、对比模式、设置、i18n；`src/ui` 是 Material You 设计系统
+   （动态配色 + 控件库 + 波浪进度条）。
+
+## 贡献者
+
+- [KOGGUA-EDIT](https://github.com/KOGGUA-EDIT) —— 需求、设计、测试与发布
+- [DeepSeek](https://github.com/deepseek-ai) —— 结对实现（代码、调试、文档），
+  提交均带 `Co-authored-by: DeepSeek <350922609+deepseek-kg1@users.noreply.github.com>`
+
+## 许可
+
+本项目源码为 MIT，见 [LICENSE](LICENSE)。
+
+随附的 `libmpv-2.dll` 来自 mpv 项目，按 **GPLv2+** 分发，许可证独立于本项目；
+其源码见 <https://github.com/mpv-player/mpv>。打包分发时请一并遵守 GPL 的条款。

@@ -1,7 +1,7 @@
 //! MuxVideo application shell: chrome, layout, playback actions and wiring.
 
 mod bars;
-mod controls;
+pub mod controls;
 pub mod diag;
 pub mod i18n;
 pub mod icon;
@@ -11,7 +11,7 @@ mod open_dialog;
 mod panels;
 pub mod stage;
 pub mod state;
-mod window;
+pub mod window;
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -36,6 +36,9 @@ pub(super) const TRANSPORT_H: f32 = 128.0;
 pub(super) const PLAYLIST_W: f32 = 328.0;
 /// How long flicker comparison holds one input before switching (seconds).
 const BLINK_HALF_SECS: f64 = 0.45;
+
+/// Public project page, linked from the About card.
+pub const GITHUB_URL: &str = "https://github.com/KOGGUA-EDIT/MuxVideo";
 
 /// Which plane a freshly opened file goes to.
 #[derive(Clone, Copy, PartialEq, Eq)]
