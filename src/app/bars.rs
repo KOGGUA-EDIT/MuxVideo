@@ -328,6 +328,16 @@ pub(super) fn rail(ui: &mut Ui, app: &mut MuxApp) {
     ui.painter()
         .rect_filled(full, CornerRadius::ZERO, p.surface);
 
+    // Empty rail space behaves like title bar chrome: drag it to move.
+    // Registered before the items so the items keep their own clicks.
+    if !app.near_edge(ui.ctx())
+        && ui
+            .interact(full, ui.id().with("rail-drag"), Sense::click_and_drag())
+            .dragged()
+    {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
+
     type Glyph = fn(&mut Ui, f32, Color32) -> egui::Response;
     const ITEM_H: f32 = 62.0;
     const GAP: f32 = 8.0;
@@ -395,6 +405,13 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
 
     // Compare bar.
     let (bar_rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 50.0), Sense::hover());
+    if !app.near_edge(ui.ctx())
+        && ui
+            .interact(bar_rect, ui.id().with("bar-drag"), Sense::click_and_drag())
+            .dragged()
+    {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
     ui.scope_builder(
         UiBuilder::new()
             .max_rect(bar_rect)
@@ -695,6 +712,18 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
     let card = ui.max_rect();
     ui.painter()
         .rect_filled(card, CornerRadius::same(28), p.surface_container_low);
+
+    // Padding around the transport controls doubles as a drag handle.
+    if ui
+        .interact(
+            card,
+            ui.id().with("transport-drag"),
+            Sense::click_and_drag(),
+        )
+        .dragged()
+    {
+        ui.ctx().send_viewport_cmd(egui::ViewportCommand::StartDrag);
+    }
 
     let inner = card.shrink2(vec2(22.0, 10.0));
 

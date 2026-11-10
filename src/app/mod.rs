@@ -667,7 +667,7 @@ impl MuxApp {
             return;
         };
         let rect = ctx.content_rect();
-        const EDGE: f32 = 6.0;
+        const EDGE: f32 = 10.0;
         let west = pointer.x <= rect.left() + EDGE;
         let east = pointer.x >= rect.right() - EDGE;
         let north = pointer.y <= rect.top() + EDGE;
@@ -688,6 +688,19 @@ impl MuxApp {
         if ctx.input(|i| i.pointer.primary_pressed()) {
             ctx.send_viewport_cmd(egui::ViewportCommand::BeginResize(dir));
         }
+    }
+
+    /// True when the pointer sits in the window's resize band. The chrome
+    /// drag handlers bow out there so resizing never turns into a window move.
+    pub(super) fn near_edge(&self, ctx: &egui::Context) -> bool {
+        let Some(p) = ctx.input(|i| i.pointer.hover_pos()) else {
+            return false;
+        };
+        let r = ctx.content_rect();
+        p.x <= r.left() + 10.0
+            || p.x >= r.right() - 10.0
+            || p.y <= r.top() + 10.0
+            || p.y >= r.bottom() - 10.0
     }
 
     fn sync_stage(&mut self, ctx: &egui::Context) {
