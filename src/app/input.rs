@@ -394,7 +394,7 @@ pub(crate) fn snapshot(app: &mut MuxApp) {
 }
 
 /// How long the native hook gets to report a press before the poll takes over.
-const POLL_GRACE: Duration = Duration::from_millis(80);
+const POLL_GRACE: Duration = Duration::from_millis(30);
 
 /// Extra grace before a silent drag (press seen, moves missing) is adopted.
 const POLL_ADOPT: Duration = Duration::from_millis(120);

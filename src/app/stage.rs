@@ -23,7 +23,9 @@ use eframe::egui::Rect;
 
 use crate::app::state::{CompareMode, SplitAxis};
 use crate::mpv::{LibMpv, MpvEvent, MpvOptions, MpvPlayer};
-use crate::video::childwin::{ChildWindow, find_window_by_title};
+use crate::video::childwin::{
+    ChildWindow, child_windows, find_window_by_title, install_input_hook,
+};
 
 /// Title of the eframe toplevel; used to find the HWND we parent into.
 pub(crate) const WINDOW_TITLE: &str = "MuxVideo";
@@ -35,7 +37,7 @@ const SYNC_INTERVAL: Duration = Duration::from_millis(250);
 
 /// How often the plane children (mpv's renderer window) are re-scanned for
 /// subclassing, so a recreated renderer cannot silently swallow the pointer.
-const HOOK_SCAN_INTERVAL: Duration = Duration::from_millis(400);
+const HOOK_SCAN_INTERVAL: Duration = Duration::from_millis(120);
 
 /// Wipe grip pill: long/short side in physical pixels. The short side also
 /// doubles as the corner radius, so the pill reads as fully rounded.
@@ -152,10 +154,6 @@ impl Surface {
         // Drop handles the renderer destroyed so the list cannot grow forever.
         self.children
             .retain(|h| crate::video::childwin::is_window(*h));
-    }
-
-    fn owns(&self, hwnd: i64) -> bool {
-        hwnd != 0 && (self.hwnd == hwnd || self.children.contains(&hwnd))
     }
 
     fn ensure(&mut self, parent: i64, plane: Plane) -> anyhow::Result<i64> {
@@ -643,14 +641,33 @@ impl Media {
     ///
     /// The stage container and the eframe toplevel also receive mouse messages
     /// (wheel events bubble up), so input is only accepted from a visible plane.
-    pub fn plane_for_hwnd(&self, hwnd: i64) -> Option<Plane> {
+    pub fn plane_for_hwnd(&mut self, hwnd: i64) -> Option<Plane> {
         // `visible` is deliberately not required: resizing the stage (toggling
         // the playlist, entering fullscreen) hides a plane for a frame or two,
         // and dropping those events made dragging feel intermittent.
-        let hit = |s: &Surface| s.rect.2 > 0 && s.owns(hwnd);
-        if hit(&self.plane_a) {
+        let owns = |s: &mut Surface| -> bool {
+            if s.rect.2 <= 0 || hwnd == 0 {
+                return false;
+            }
+            if s.hwnd == hwnd || s.children.contains(&hwnd) {
+                return true;
+            }
+            // libmpv rebuilds its render window whenever a file is swapped in,
+            // and the throttled rescan may not have caught the new one yet. A
+            // message from it would be dropped for up to a whole scan interval,
+            // which is exactly the "drag does nothing right after switching"
+            // report. Adopt it on sight instead.
+            if child_windows(s.hwnd).contains(&hwnd) {
+                install_input_hook(hwnd);
+                s.children.push(hwnd);
+                crate::diag!("[hooks] adopted child={hwnd} on first message");
+                return true;
+            }
+            false
+        };
+        if owns(&mut self.plane_a) {
             Some(Plane::A)
-        } else if hit(&self.plane_b) {
+        } else if owns(&mut self.plane_b) {
             Some(Plane::B)
         } else {
             None
