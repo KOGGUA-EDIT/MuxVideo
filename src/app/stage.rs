@@ -21,7 +21,6 @@ use std::time::{Duration, Instant};
 
 use eframe::egui::Rect;
 
-use crate::app::scrub::{CACHE_BYTES, FrameCache, Grabber};
 use crate::app::state::{CompareMode, SplitAxis};
 use crate::mpv::{LibMpv, MpvEvent, MpvOptions, MpvPlayer};
 use crate::video::childwin::{ChildWindow, find_window_by_title};
@@ -212,27 +211,8 @@ pub(crate) struct Media {
     grip: Surface,
     planes_ready: bool,
 
-    pub player_a: Option<Arc<MpvPlayer>>,
-    pub player_b: Option<Arc<MpvPlayer>>,
-
-    /// Opaque child window that shows a cached frame on top of a plane while
-    /// libmpv is still seeking during a scrub.
-    preview: Surface,
-    pub cache_a: FrameCache,
-    cache_b: FrameCache,
-    grabber: Option<Grabber>,
-    last_grab: Instant,
-    /// Mirrors the 适应 / 填充 toggle for the overlay blit.
-    preview_fill: bool,
-    /// Frame currently painted into `preview`, if any.
-    preview_frame: Option<u64>,
-    /// Last preview that was painted, kept as a fallback so the overlay
-    /// never goes blank in the middle of a gesture.
-    preview_last: Option<(u64, std::sync::Arc<crate::video::childwin::PreviewFrame>)>,
-    /// When the gesture started (used to throttle the debug log).
-    preview_since: Option<Instant>,
-    /// Rotating sweep index used to prefetch around a paused playhead.
-    prefetch_tick: u32,
+    pub player_a: Option<MpvPlayer>,
+    pub player_b: Option<MpvPlayer>,
 
     pub file_a: Option<PathBuf>,
     pub file_b: Option<PathBuf>,
@@ -262,16 +242,6 @@ impl Default for Media {
             planes_ready: false,
             player_a: None,
             player_b: None,
-            preview: Surface::new(),
-            cache_a: FrameCache::new(CACHE_BYTES),
-            cache_b: FrameCache::new(CACHE_BYTES),
-            grabber: None,
-            last_grab: Instant::now() - Duration::from_secs(1),
-            preview_fill: false,
-            preview_frame: None,
-            preview_last: None,
-            preview_since: None,
-            prefetch_tick: 0,
             file_a: None,
             file_b: None,
             meta_a: None,
@@ -314,14 +284,7 @@ impl Media {
                     self.grip.window = Some(win);
                 })
                 .is_ok();
-            self.preview.round = 0;
-            let preview_ok = ChildWindow::create_preview(stage, 0x4D56_0006, "muxvideo-preview")
-                .map(|win| {
-                    self.preview.hwnd = win.hwnd();
-                    self.preview.window = Some(win);
-                })
-                .is_ok();
-            self.planes_ready = ok && grip_ok && preview_ok;
+            self.planes_ready = ok && grip_ok;
         }
         self.planes_ready
     }
@@ -343,7 +306,7 @@ impl Media {
         lib: &Arc<LibMpv>,
         plane: Plane,
         opts: &MpvOptions,
-    ) -> anyhow::Result<Arc<MpvPlayer>> {
+    ) -> anyhow::Result<MpvPlayer> {
         if !self.ensure_native() {
             anyhow::bail!("舞台窗口尚未创建（找不到主窗口或子窗口创建失败）");
         }
@@ -358,7 +321,7 @@ impl Media {
         if plane == Plane::B {
             player.set_mute(true);
         }
-        Ok(Arc::new(player))
+        Ok(player)
     }
 
     // ── loading ───────────────────────────────────────────────────────────
@@ -373,10 +336,6 @@ impl Media {
             let player = self.spawn_player(lib, Plane::A, opts)?;
             self.player_a = Some(player);
         }
-        // Frame numbers belong to the file that was open, so the previous
-        // cache would paint the wrong picture after a switch.
-        self.cache_a.clear();
-        self.hide_preview();
         if let Some(player) = &self.player_a {
             player.load_file(&path.to_string_lossy());
         }
@@ -394,166 +353,11 @@ impl Media {
             let player = self.spawn_player(lib, Plane::B, opts)?;
             self.player_b = Some(player);
         }
-        self.cache_b.clear();
-        self.hide_preview();
         if let Some(player) = &self.player_b {
             player.load_file(&path.to_string_lossy());
         }
         self.file_b = Some(path.to_path_buf());
         Ok(())
-    }
-
-    // ── scrub cache ───────────────────────────────────────────────────────
-
-    /// Grabs frames in the background and paints them over a plane right away.
-    ///
-    /// Called once per UI frame. `busy` is true while the user drags, which
-    /// makes the sampler follow the pointer instead of the playback position.
-    pub fn cache_tick(&mut self, playing: bool, scrubbing: bool, scrub_target: Option<u64>) {
-        if self.grabber.is_none() {
-            self.grabber = Some(Grabber::spawn());
-        }
-        let Some(grabber) = &self.grabber else {
-            return;
-        };
-        let mut landed = 0usize;
-        for (_frame, image) in grabber.drain() {
-            self.cache_a.insert(_frame, image);
-            landed += 1;
-        }
-        if landed > 0 {
-            let (frames, bytes, hits) = self.cache_a.stats();
-            crate::diag!(
-                "[cache] +{landed} frames={frames} bytes={bytes} hits={hits} preview={}",
-                self.preview.visible
-            );
-        }
-
-        // Never grab while the user drags: `screenshot-raw` copies the whole
-        // frame (33 MB for 4K) and converting it competes with the decode that
-        // is trying to keep up with the pointer, which makes the drag itself
-        // stutter. Coverage is built up while playing and while idle instead.
-        // Grabbing is expensive (a full-frame readback plus conversion), so a
-        // drag only samples a few times per second: enough to keep the preview
-        // moving, cheap enough to leave the decoder alone.
-        let interval = if scrubbing {
-            Duration::from_millis(300)
-        } else if playing {
-            Duration::from_millis(220)
-        } else {
-            Duration::from_millis(260)
-        };
-        if self.last_grab.elapsed() < interval {
-            return;
-        }
-        let Some(player) = self.player_a.clone() else {
-            return;
-        };
-        let fps = self.meta_a.as_ref().map(|meta| meta.fps).unwrap_or(30.0);
-        let now = (player.time_pos().max(0.0) * fps).round() as u64;
-        let _ = scrub_target;
-        // While paused, sweep a window around the playhead so that dragging in
-        // either direction immediately has something nearby to show.
-        let frame = if playing {
-            now
-        } else {
-            const SWEEP: [i64; 11] = [0, 1, -1, 2, -2, 3, -3, 4, -4, 5, -5];
-            let step = (fps * 0.35).round().max(1.0) as i64;
-            let offset = SWEEP[(self.prefetch_tick as usize) % SWEEP.len()];
-            self.prefetch_tick = self.prefetch_tick.wrapping_add(1);
-            (now as i64 + offset * step).max(0) as u64
-        };
-        self.last_grab = Instant::now();
-        let Some(grabber) = &self.grabber else {
-            return;
-        };
-        if self.cache_a.get(frame).is_none() {
-            grabber.request(&player, frame, fps);
-        }
-    }
-
-    /// Tells the overlay whether to cover or letterbox (mirrors 适应 / 填充).
-    pub fn set_preview_fill(&mut self, fill: bool) {
-        self.preview_fill = fill;
-        crate::video::childwin::set_preview_fill(fill);
-    }
-
-    /// Paints the cached frame closest to `frame` over `plane`.
-    ///
-    /// Once the overlay is up it never goes blank mid-gesture: when the exact
-    /// neighbourhood is missing the previous image stays on screen instead of
-    /// dropping back to libmpv, which is what made dragging blink.
-    pub fn show_cached(&mut self, plane: Plane, frame: u64, window: u64) -> bool {
-        let Some(hwnd) = self.preview.window.as_ref().map(ChildWindow::hwnd) else {
-            return false;
-        };
-        let rect = self.surface(plane).rect;
-        if rect.2 <= 0 || rect.3 <= 0 {
-            return false;
-        }
-        let cache = match plane {
-            Plane::A => &mut self.cache_a,
-            Plane::B => &mut self.cache_b,
-        };
-        let picked = match cache.get(frame) {
-            Some(image) => Some((frame, image)),
-            None => cache
-                .nearest(frame, window)
-                .or_else(|| self.preview_last.clone()),
-        };
-        let Some((painted, image)) = picked else {
-            return false;
-        };
-        // Distance between the pointer and the painted frame. A large value
-        // means the overlay is showing a visibly different moment.
-        static SHOWS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-        if SHOWS
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            .is_multiple_of(16)
-        {
-            crate::diag!(
-                "[cache] show target={frame} painted={painted} delta={}",
-                painted as i64 - frame as i64
-            );
-        }
-        crate::video::childwin::set_preview_frame(hwnd, image.clone());
-        let was_visible = self.preview.visible;
-        self.preview.place(Some(rect));
-        self.preview_frame = Some(painted);
-        self.preview_last = Some((painted, image));
-        self.preview_since.get_or_insert_with(Instant::now);
-        // Only restack when the overlay appears: doing it every drag step makes
-        // the window take the top of the z-order again and again, which looks
-        // like the picture is blinking.
-        if !was_visible && let Some(win) = &self.preview.window {
-            win.bring_to_top();
-        }
-        true
-    }
-
-    /// Hides the cached-frame overlay (libmpv is showing the real frame again).
-    pub fn hide_preview(&mut self) {
-        let had_frame = self.preview_frame.take().is_some();
-        self.preview_last = None;
-        self.preview_since = None;
-        if had_frame {
-            if let Some(hwnd) = self.preview.window.as_ref().map(ChildWindow::hwnd) {
-                crate::video::childwin::clear_preview_frame(hwnd);
-            }
-            self.preview.place(None);
-        }
-    }
-
-    /// Snapshot of the A plane cache: (frames, bytes, hits).
-    pub fn cache_stats(&self) -> (usize, usize, u64) {
-        self.cache_a.stats()
-    }
-
-    fn surface(&self, plane: Plane) -> &Surface {
-        match plane {
-            Plane::A => &self.plane_a,
-            Plane::B => &self.plane_b,
-        }
     }
 
     // ── layout ────────────────────────────────────────────────────────────
@@ -830,8 +634,8 @@ impl Media {
 
     pub fn player_of(&self, plane: Plane) -> Option<&MpvPlayer> {
         match plane {
-            Plane::A => self.player_a.as_deref(),
-            Plane::B => self.player_b.as_deref(),
+            Plane::A => self.player_a.as_ref(),
+            Plane::B => self.player_b.as_ref(),
         }
     }
 

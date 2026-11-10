@@ -36,12 +36,6 @@ pub fn log(args: std::fmt::Arguments<'_>) {
     if !enabled() {
         return;
     }
-    // One writer at a time: the grab and input threads log concurrently and
-    // interleaved lines made the log hard to read.
-    static WRITE_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-    let Ok(_guard) = WRITE_LOCK.lock() else {
-        return;
-    };
     let Some(path) = log_path() else { return };
     let Ok(mut file) = std::fs::OpenOptions::new()
         .create(true)

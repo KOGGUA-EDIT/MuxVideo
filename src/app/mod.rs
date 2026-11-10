@@ -9,7 +9,6 @@ pub mod icons;
 mod input;
 mod open_dialog;
 mod panels;
-pub mod scrub;
 pub mod stage;
 pub mod state;
 pub mod window;
@@ -223,8 +222,8 @@ impl MuxApp {
     pub(super) fn active_player(&self) -> Option<&crate::mpv::MpvPlayer> {
         self.media
             .player_a
-            .as_deref()
-            .or(self.media.player_b.as_deref())
+            .as_ref()
+            .or(self.media.player_b.as_ref())
     }
 
     pub(super) fn duration(&self) -> f64 {
@@ -908,7 +907,6 @@ impl MuxApp {
     /// Fits each plane's picture to its surface: either letterboxed
     /// (`video-zoom` 0) or cropped to fill when the user picked 填充.
     fn sync_fit(&mut self, ppp: f32) {
-        self.media.set_preview_fill(self.settings.fill);
         let _ = ppp;
         let mode_tag = match self.settings.mode {
             CompareMode::Single => 0u8,
@@ -1193,7 +1191,6 @@ impl eframe::App for MuxApp {
             });
 
         self.sync_stage(ctx);
-        self.pump_scrub_cache();
         self.toast_layer(ctx);
         self.maybe_save();
 
@@ -1211,30 +1208,6 @@ impl eframe::App for MuxApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.settings.save();
-    }
-}
-
-impl MuxApp {
-    /// Keeps the scrub cache fed. The overlay itself is only taken down when
-    /// the gesture ends: hiding it whenever libmpv happens to catch up made the
-    /// picture alternate between the cached preview and the decoded frame on
-    /// every drag step, which read as flickering.
-    fn pump_scrub_cache(&mut self) {
-        let playing = self.is_playing();
-        // The gesture is what matters, not `scrub`: that one is only written
-        // when the pointer has travelled far enough to cross a frame boundary,
-        // so using it here made the overlay flicker on small drag steps.
-        let scrubbing = self
-            .gesture
-            .as_ref()
-            .is_some_and(|drag| drag.mode == input::Mode::Scrub);
-        let target = self
-            .scrub
-            .map(|secs| crate::app::state::frame_at(secs, self.fps()));
-        self.media.cache_tick(playing, scrubbing, target);
-        if !scrubbing {
-            self.media.hide_preview();
-        }
     }
 }
 

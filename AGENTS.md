@@ -42,12 +42,6 @@ cargo build --offline
   `MUXVIDEO_NO_HOOKS=1` 可禁用钩子单独验证轮询路径。真机验证只用 `tools\real_drag.ps1` / `real_click.ps1`
   注入的真实输入，`input-debug.log` 里出现 `[native] Down/Up` 才算事件到位（MCP 的 drag 常落在别的窗口）。
 - A 面为同步 master，B 面漂移 > 80 ms 时 IPC-free 的 `seek_absolute` 纠偏（250 ms 节流）。
-- 擦洗缓存（`src/app/scrub.rs`）：`Grabber` 后台线程用 `screenshot-raw`（经 `mpv_command_node`）抓当前帧，
-  `to_preview` 降采样到最长边 1280 的 BGRA 存进 `FrameCache`（LRU，上限 `CACHE_BYTES = 192 MiB`，约 50 帧 4K 预览）。
-  拖动时 `Media::show_cached` 把最接近的缓存帧贴到一个**原生 preview 子窗口**（`MuxVideoPreview`，GDI `StretchDIBits`）
-  盖在平面上，`pump_scrub_cache` 在 `|time_pos - target| < 0.5/fps` 时再隐藏，让真帧透出。
-- `screenshot-raw` 的 `MpvByteArray` 在 union 里必须是**指针**（`*mut MpvByteArray`）；按值放会返回 `-4 invalid parameter`。
-  同一原因：`mpv_api!` 里没有 `mpv_command_node`/`mpv_free_node_contents` 时，`screenshot_to_file` 之外的取帧路径都走不通。
 - 官方 `mpv.exe` 的 `--wid` 不可用（`[vo/gpu/win32] unable to create window!`），不要回退到 shell out。
 
 ## 目录
