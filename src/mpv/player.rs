@@ -408,6 +408,21 @@ impl MpvPlayer {
         let _ = self.command(&["seek", &format!("{target:.3}"), "absolute+exact"]);
     }
 
+    /// Snaps to the nearest keyframe instead of landing on the exact frame.
+    ///
+    /// An exact seek decodes from the previous keyframe onwards, which on a 4K
+    /// VP9 file costs hundreds of milliseconds. Dragging used to emit one per
+    /// mouse move, each aborting the last, so the picture looked frozen.
+    /// Scrubbing only needs a fast preview; the exact landing happens once the
+    /// button is released.
+    pub fn seek_absolute_fast(&self, secs: f64) {
+        if !secs.is_finite() {
+            return;
+        }
+        let target = secs.max(0.0);
+        let _ = self.command(&["seek", &format!("{target:.3}"), "absolute+keyframes"]);
+    }
+
     pub fn seek_relative(&self, secs: f64) {
         if !secs.is_finite() {
             return;

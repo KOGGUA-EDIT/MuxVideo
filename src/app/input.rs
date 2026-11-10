@@ -259,7 +259,9 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
             ));
             if (target - last_target).abs() >= 0.25 / fps {
                 app.scrub = Some(target);
-                app.media.seek_all(target);
+                // Keyframe seek keeps a 4K VP9 file following the pointer; the
+                // exact frame is resolved in `release`.
+                app.media.seek_all_fast(target);
                 let total = crate::app::state::frame_at(duration, fps);
                 app.toast = Some(crate::app::state::Toast::info(format!(
                     "{} {} / {}",
@@ -308,6 +310,11 @@ fn release(app: &mut MuxApp, ctx: &egui::Context) {
         drag.began.elapsed().as_millis()
     );
     let quick = drag.began.elapsed() < Duration::from_millis(CLICK_MAX_MS);
+    if drag.mode == Mode::Scrub && drag.moved {
+        // Dragging only seeked to keyframes; land on the exact frame once the
+        // button is up (an exact seek on 4K VP9 is far too slow per move).
+        app.media.seek_all(drag.last_target);
+    }
     if drag.mode == Mode::Scrub {
         // Scrubbing leaves the player parked on the frame under the cursor.
         app.scrub = None;

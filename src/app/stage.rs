@@ -588,6 +588,17 @@ impl Media {
         }
     }
 
+    /// Keyframe seek: what a drag step uses, so a 4K VP9 file still follows
+    /// the pointer. The exact landing happens on release (see `seek_all`).
+    pub fn seek_all_fast(&self, secs: f64) {
+        for player in [self.player_a.as_ref(), self.player_b.as_ref()]
+            .into_iter()
+            .flatten()
+        {
+            player.seek_absolute_fast(secs);
+        }
+    }
+
     pub(crate) fn pump(&mut self) -> Vec<(char, MpvEvent)> {
         let mut events = Vec::new();
         if let Some(p) = &self.player_a {
