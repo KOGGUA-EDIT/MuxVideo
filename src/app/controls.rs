@@ -142,7 +142,131 @@ pub fn chip(ui: &mut Ui, palette: &Palette, label: &str, selected: bool) -> Resp
     response
 }
 
-/// Material 3 slider: 4 px inactive track, primary active track, 18 px thumb.
+/// State for the sliding selection pill of a [`chip_row`].
+#[derive(Clone, Copy)]
+struct PillSlide {
+    from: f32,
+    goal: f32,
+    t0: f64,
+}
+
+/// Ease-out cubic: moves quickly at first, then settles. Matches the rail pill.
+fn slide_at(state: &PillSlide, now: f64) -> f32 {
+    const DURATION: f64 = 0.30;
+    let t = ((now - state.t0) / DURATION).clamp(0.0, 1.0) as f32;
+    let eased = 1.0 - (1.0 - t).powi(3);
+    state.from + (state.goal - state.from) * eased
+}
+
+/// A row of chips whose selected background slides between items.
+///
+/// Returns the index the user clicked. Chips keep their own rounded shape; only
+/// the highlight travels, so a mode switch reads as motion instead of a blink.
+pub fn chip_row(
+    ui: &mut Ui,
+    palette: &Palette,
+    id_salt: impl std::hash::Hash + Copy,
+    labels: &[&str],
+    selected: usize,
+) -> Option<usize> {
+    const HEIGHT: f32 = 34.0;
+    const GAP: f32 = 6.0;
+    const PAD_X: f32 = 14.0;
+    if labels.is_empty() {
+        return None;
+    }
+    let selected = selected.min(labels.len() - 1);
+    let galleys: Vec<_> = labels
+        .iter()
+        .map(|label| {
+            ui.painter().layout_no_wrap(
+                (*label).to_owned(),
+                FontId::proportional(13.5),
+                palette.on_surface,
+            )
+        })
+        .collect();
+    let widths: Vec<f32> = galleys.iter().map(|g| g.size().x + PAD_X * 2.0).collect();
+    let total: f32 = widths.iter().sum::<f32>() + GAP * labels.len().saturating_sub(1) as f32;
+    let (rect, _) = ui.allocate_exact_size(vec2(total, HEIGHT), Sense::hover());
+    let id = ui.id().with(id_salt);
+
+    let now = ui.input(|i| i.time);
+    let target = selected as f32;
+    let mut state = ui
+        .data_mut(|d| d.get_temp::<PillSlide>(id))
+        .unwrap_or(PillSlide {
+            from: target,
+            goal: target,
+            t0: now,
+        });
+    if (state.goal - target).abs() > 0.001 {
+        let current = slide_at(&state, now);
+        state = PillSlide {
+            from: current,
+            goal: target,
+            t0: now,
+        };
+    }
+    let pos = slide_at(&state, now);
+    ui.data_mut(|d| d.insert_temp(id, state));
+    if (pos - target).abs() > 0.004 {
+        ui.ctx().request_repaint();
+    }
+
+    let mut x = rect.min.x;
+    let mut item_rects = Vec::with_capacity(labels.len());
+    for width in &widths {
+        item_rects.push(Rect::from_min_size(
+            pos2(x, rect.min.y),
+            vec2(*width, HEIGHT),
+        ));
+        x += *width + GAP;
+    }
+
+    // Group track, then the moving pill, then labels.
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(10), palette.surface_container_low);
+    let first = pos.floor().clamp(0.0, labels.len() as f32 - 1.0);
+    let second = (first + 1.0).min(labels.len() as f32 - 1.0);
+    let blend = pos - first;
+    let a = item_rects[first as usize];
+    let b = item_rects[second as usize];
+    let highlight = Rect::from_min_max(
+        pos2(a.min.x + (b.min.x - a.min.x) * blend, a.min.y),
+        pos2(a.max.x + (b.max.x - a.max.x) * blend, a.max.y),
+    );
+    ui.painter().rect_filled(
+        highlight,
+        CornerRadius::same(10),
+        palette.secondary_container,
+    );
+    ui.painter().rect_stroke(
+        highlight,
+        CornerRadius::same(10),
+        Stroke::new(1.0_f32, palette.outline_variant),
+        StrokeKind::Inside,
+    );
+
+    let mut clicked = None;
+    for (index, (item, galley)) in item_rects.iter().zip(galleys).enumerate() {
+        let response = ui.interact(*item, id.with(index), Sense::click());
+        if response.clicked() {
+            clicked = Some(index);
+        }
+        let near = 1.0 - (pos - index as f32).abs().clamp(0.0, 1.0);
+        let color = mix(
+            palette.on_surface_variant,
+            palette.on_secondary_container,
+            near,
+        );
+        ui.painter()
+            .galley(item.center() - galley.size() * 0.5, galley, color);
+    }
+    clicked
+}
+
+/// Material 3 Expressive slider: 8 px rounded track, pill-shaped thumb.
 ///
 /// `value` is a fraction of the full width; the caller maps it to its own range.
 pub fn slider(
@@ -152,10 +276,13 @@ pub fn slider(
     value: &mut f32,
     enabled: bool,
 ) -> Response {
-    let height = 28.0;
-    let (rect, mut response) = ui.allocate_exact_size(vec2(width, height), Sense::click_and_drag());
-    let track_h = 4.0;
-    let track = Rect::from_center_size(rect.center(), vec2(rect.width() - 12.0, track_h));
+    const HEIGHT: f32 = 30.0;
+    const TRACK_H: f32 = 8.0;
+    const GAP: f32 = 6.0;
+    const THUMB_W: f32 = 4.0;
+    const THUMB_H: f32 = 18.0;
+    let (rect, mut response) = ui.allocate_exact_size(vec2(width, HEIGHT), Sense::click_and_drag());
+    let track = Rect::from_center_size(rect.center(), vec2(rect.width() - 12.0, TRACK_H));
 
     if enabled
         && (response.dragged() || response.clicked())
@@ -168,44 +295,57 @@ pub fn slider(
         }
     }
     let frac = value.clamp(0.0, 1.0);
-    let active = Rect::from_min_max(
-        track.min,
-        pos2(track.min.x + track.width() * frac, track.max.y),
-    );
+    let thumb_x = track.min.x + track.width() * frac;
     let inactive_color = palette.surface_container_highest;
     let active_color = if enabled {
         palette.primary
     } else {
         palette.outline_variant
     };
-    ui.painter()
-        .rect_filled(track, CornerRadius::same(2), inactive_color);
-    ui.painter()
-        .rect_filled(active, CornerRadius::same(2), active_color);
 
-    let radius = if response.hovered() || response.dragged() {
-        8.5
+    ui.painter()
+        .rect_filled(track, CornerRadius::same(TRACK_H as u8 / 2), inactive_color);
+    let active = Rect::from_min_max(
+        track.min,
+        pos2((thumb_x - GAP).max(track.min.x), track.max.y),
+    );
+    if active.width() > 1.0 {
+        ui.painter()
+            .rect_filled(active, CornerRadius::same(TRACK_H as u8 / 2), active_color);
+    }
+    let tail = Rect::from_min_max(
+        pos2((thumb_x + GAP).min(track.max.x), track.min.y),
+        track.max,
+    );
+    if tail.width() > 1.0 {
+        ui.painter()
+            .rect_filled(tail, CornerRadius::same(TRACK_H as u8 / 2), inactive_color);
+    }
+
+    // Pill thumb: a narrow rounded rectangle, wider while hovered or dragged.
+    let hot = response.hovered() || response.dragged();
+    let thumb_size = if hot {
+        vec2(THUMB_W + 2.0, THUMB_H + 4.0)
     } else {
-        7.0
+        vec2(THUMB_W, THUMB_H)
     };
-    let thumb_x = track.min.x + track.width() * frac;
-    ui.painter().circle_filled(
-        pos2(thumb_x, rect.center().y),
-        radius,
+    let thumb = Rect::from_center_size(pos2(thumb_x, rect.center().y), thumb_size);
+    if hot {
+        ui.painter().rect_filled(
+            Rect::from_center_size(thumb.center(), thumb_size + vec2(10.0, 8.0)),
+            CornerRadius::same(10),
+            palette.primary.gamma_multiply(0.18),
+        );
+    }
+    ui.painter().rect_filled(
+        thumb,
+        CornerRadius::same(thumb_size.x.min(thumb_size.y) as u8 / 2),
         if enabled {
             palette.primary
         } else {
             palette.outline
         },
     );
-
-    if response.hovered() || response.dragged() {
-        ui.painter().circle_filled(
-            pos2(thumb_x, rect.center().y),
-            14.0,
-            palette.primary.gamma_multiply(0.18),
-        );
-    }
     response
 }
 

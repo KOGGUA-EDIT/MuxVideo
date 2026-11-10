@@ -491,13 +491,13 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                             .color(p.on_surface_variant),
                     );
                     ui.add_space(12.0);
-                    for (label, lang) in [("中文", Lang::Zh), ("English", Lang::En)] {
-                        let selected = app.settings.lang == lang;
-                        if controls::chip(ui, &p, label, selected).clicked() && !selected {
-                            app.settings.lang = lang;
-                            app.settings_dirty = true;
-                        }
-                        ui.add_space(4.0);
+                    let lang_labels = ["中文", "English"];
+                    let lang_index = if app.settings.lang == Lang::Zh { 0 } else { 1 };
+                    if let Some(pick) = controls::chip_row(ui, &p, "lang", &lang_labels, lang_index)
+                        && pick != lang_index
+                    {
+                        app.settings.lang = if pick == 0 { Lang::Zh } else { Lang::En };
+                        app.settings_dirty = true;
                     }
                 });
                 ui.add_space(12.0);
@@ -508,16 +508,14 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                             .color(p.on_surface_variant),
                     );
                     ui.add_space(12.0);
-                    for (label, dark) in [
-                        (app.t("深色", "Dark"), true),
-                        (app.t("浅色", "Light"), false),
-                    ] {
-                        let selected = app.settings.dark == dark;
-                        if controls::chip(ui, &p, label, selected).clicked() && !selected {
-                            app.settings.dark = dark;
-                            ctx_for_palette = Some(ui.ctx().clone());
-                        }
-                        ui.add_space(4.0);
+                    let scheme_labels = [app.t("深色", "Dark"), app.t("浅色", "Light")];
+                    let scheme_index = usize::from(!app.settings.dark);
+                    if let Some(pick) =
+                        controls::chip_row(ui, &p, "scheme", &scheme_labels, scheme_index)
+                        && pick != scheme_index
+                    {
+                        app.settings.dark = pick == 0;
+                        ctx_for_palette = Some(ui.ctx().clone());
                     }
                 });
                 ui.add_space(12.0);
@@ -604,13 +602,16 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                             .color(p.on_surface_variant),
                     );
                     ui.add_space(14.0);
-                    for value in ["auto-safe", "d3d11va", "no"] {
-                        let selected = app.settings.hwdec == value;
-                        if controls::chip(ui, &p, value, selected).clicked() && !selected {
-                            app.settings.hwdec = value.to_owned();
-                            app.settings_dirty = true;
-                        }
-                        ui.add_space(4.0);
+                    let hw_labels = ["auto-safe", "d3d11va", "no"];
+                    let hw_index = hw_labels
+                        .iter()
+                        .position(|v| *v == app.settings.hwdec)
+                        .unwrap_or(0);
+                    if let Some(pick) = controls::chip_row(ui, &p, "hwdec", &hw_labels, hw_index)
+                        && pick != hw_index
+                    {
+                        app.settings.hwdec = hw_labels[pick].to_owned();
+                        app.settings_dirty = true;
                     }
                     ui.label(
                         egui::RichText::new(app.t("下次载入生效", "applies on next load"))

@@ -416,28 +416,42 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
             .max_rect(bar_rect)
             .layout(Layout::left_to_right(Align::Center)),
         |ui| {
-            for mode in CompareMode::ALL {
-                let selected = app.settings.mode == mode;
-                // No hover card here: the native video plane sits above egui, so
-                // anything drawn below the toolbar gets covered by the picture.
-                if controls::chip(ui, &p, mode.label(app.settings.lang), selected).clicked() {
-                    app.set_mode(mode);
-                }
-                ui.add_space(6.0);
+            let mode_labels: Vec<&str> = CompareMode::ALL
+                .iter()
+                .map(|m| m.label(app.settings.lang))
+                .collect();
+            let mode_index = CompareMode::ALL
+                .iter()
+                .position(|m| *m == app.settings.mode)
+                .unwrap_or(0);
+            if let Some(pick) =
+                controls::chip_row(ui, &p, "compare-modes", &mode_labels, mode_index)
+                && pick != mode_index
+            {
+                app.set_mode(CompareMode::ALL[pick]);
             }
-            ui.add_space(6.0);
+            ui.add_space(10.0);
 
             if matches!(app.settings.mode, CompareMode::Pair | CompareMode::Wipe) {
                 let (sep, _) = ui.allocate_exact_size(vec2(1.0, 20.0), Sense::hover());
                 ui.painter()
                     .rect_filled(sep, CornerRadius::same(1), p.outline_variant);
                 ui.add_space(8.0);
-                for axis in [SplitAxis::Horizontal, SplitAxis::Vertical] {
-                    if controls::chip(ui, &p, axis.label(app.settings.lang), app.settings.axis == axis).clicked() {
-                        app.settings.axis = axis;
-                        app.settings_dirty = true;
-                    }
-                    ui.add_space(4.0);
+                let axis_labels = [
+                    SplitAxis::Horizontal.label(app.settings.lang),
+                    SplitAxis::Vertical.label(app.settings.lang),
+                ];
+                let axis_index = usize::from(app.settings.axis == SplitAxis::Vertical);
+                if let Some(pick) =
+                    controls::chip_row(ui, &p, "split-axis", &axis_labels, axis_index)
+                    && pick != axis_index
+                {
+                    app.settings.axis = if pick == 0 {
+                        SplitAxis::Horizontal
+                    } else {
+                        SplitAxis::Vertical
+                    };
+                    app.settings_dirty = true;
                 }
                 if app.settings.mode == CompareMode::Wipe {
                     ui.add_space(10.0);
