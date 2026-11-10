@@ -34,6 +34,11 @@ const DOUBLE_CLICK_MS: u64 = 250;
 const DOUBLE_CLICK_PX: i32 = 12;
 /// Volume per wheel notch, in mpv volume units.
 const VOLUME_STEP: f64 = 4.0;
+/// Minimum time between two scrub seeks. A 4K file needs a few hundred
+/// milliseconds to decode a frame; asking for more than ~10 frames a second
+/// only queues cancels and makes the whole UI stutter, so the newest target is
+/// kept until this window has passed.
+const SEEK_MIN_GAP: Duration = Duration::from_millis(90);
 /// Zoom per wheel notch.
 const ZOOM_STEP: f64 = 0.10;
 const ZOOM_MIN: f64 = -2.0;
@@ -61,6 +66,11 @@ pub(crate) struct Drag {
     frame0: f64,
     /// Last seek target, so we do not flood mpv with duplicate seeks.
     last_target: f64,
+    /// Target that arrived while a seek was still decoding; issued as soon as
+    /// the player is idle again so no movement is ever dropped.
+    pending_target: Option<f64>,
+    /// When the last scrub seek was issued, for the rate limit.
+    seek_at: Instant,
     moved: bool,
     began: Instant,
 }
@@ -149,6 +159,9 @@ fn press(app: &mut MuxApp, plane: Plane, x: i32, y: i32, button: u8) {
         last: (x, y),
         frame0,
         last_target: frame0,
+        pending_target: None,
+        // Start in the past so the first movement seeks immediately.
+        seek_at: Instant::now() - SEEK_MIN_GAP,
         moved: false,
         began: Instant::now(),
     });
@@ -257,23 +270,37 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
             debug_note(&format!(
                 "scrub tx={tx} ppf={ppf:.2} fps={fps:.3} frame0={frame0:.3} target={target:.3} dur={duration:.3}"
             ));
-            if (target - last_target).abs() >= 0.25 / fps {
+            let moved_enough = (target - last_target).abs() >= 0.25 / fps;
+            let has_pending = drag.pending_target.is_some();
+            if moved_enough || has_pending {
                 app.scrub = Some(target);
                 // Keyframe seek keeps a 4K VP9 file following the pointer; the
-                // exact frame is resolved in `release`.
-                app.media.seek_all_fast(target);
-                crate::diag_verbose!(
-                    "[scrub] seek target={target:.3} from={frame0:.3} tx={tx} dur={duration:.3}"
-                );
-                let total = crate::app::state::frame_at(duration, fps);
-                app.toast = Some(crate::app::state::Toast::info(format!(
-                    "{} {} / {}",
-                    app.t("帧", "Frame"),
-                    crate::app::state::frame_at(target, fps),
-                    total
-                )));
-                if let Some(drag) = app.gesture.as_mut() {
-                    drag.last_target = target;
+                // exact frame is resolved in `release`. Only one seek may be in
+                // flight: issuing another while the current one is still
+                // decoding cancels it, and on 4K VP9 that made the drag crawl.
+                if app.media.any_seeking() || drag.seek_at.elapsed() < SEEK_MIN_GAP {
+                    crate::diag_verbose!("[scrub] hold target={target:.3} (seek in flight)");
+                    if let Some(drag) = app.gesture.as_mut() {
+                        drag.pending_target = Some(target);
+                    }
+                } else {
+                    let issue = drag.pending_target.unwrap_or(target);
+                    app.media.seek_all_fast(issue);
+                    crate::diag_verbose!(
+                        "[scrub] seek target={issue:.3} from={frame0:.3} tx={tx} dur={duration:.3}"
+                    );
+                    let total = crate::app::state::frame_at(duration, fps);
+                    app.toast = Some(crate::app::state::Toast::info(format!(
+                        "{} {} / {}",
+                        app.t("帧", "Frame"),
+                        crate::app::state::frame_at(issue, fps),
+                        total
+                    )));
+                    if let Some(drag) = app.gesture.as_mut() {
+                        drag.last_target = issue;
+                        drag.pending_target = None;
+                        drag.seek_at = Instant::now();
+                    }
                 }
             }
             let _ = plane;
