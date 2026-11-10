@@ -42,6 +42,160 @@ pub(crate) mod event_id {
     pub const PROPERTY_CHANGE: std::ffi::c_int = 22;
 }
 
+/// `mpv_format` values used when building or reading `mpv_node`s.
+pub(crate) mod node_format {
+    pub const NONE: std::ffi::c_int = 0;
+    pub const STRING: std::ffi::c_int = 1;
+    pub const INT64: std::ffi::c_int = 4;
+    pub const NODE_ARRAY: std::ffi::c_int = 7;
+    pub const NODE_MAP: std::ffi::c_int = 8;
+    pub const BYTE_ARRAY: std::ffi::c_int = 9;
+}
+
+/// Raw `mpv_node_list` (array or map payload of an `mpv_node`).
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct MpvNodeList {
+    pub num: std::ffi::c_int,
+    pub values: *mut MpvNode,
+    /// Only set for maps; parallel array of key names.
+    pub keys: *mut *mut std::ffi::c_char,
+}
+
+/// Raw `mpv_byte_array` payload of an `MPV_FORMAT_BYTE_ARRAY` node.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct MpvByteArray {
+    pub data: *mut std::ffi::c_void,
+    pub size: usize,
+}
+
+/// Raw `mpv_node` union.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) union MpvNodeUnion {
+    pub string: *mut std::ffi::c_char,
+    pub flag: std::ffi::c_int,
+    pub int64: i64,
+    pub double: f64,
+    pub list: *mut MpvNodeList,
+    pub byte_array: *mut MpvByteArray,
+}
+
+/// Raw `mpv_node` returned by `mpv_command_node` / `mpv_get_property`.
+///
+/// Mirrors `libmpv/client.h`; freed with `mpv_free_node_contents`.
+#[repr(C)]
+#[derive(Clone, Copy)]
+pub(crate) struct MpvNode {
+    pub u: MpvNodeUnion,
+    pub format: std::ffi::c_int,
+}
+
+impl MpvNode {
+    pub(crate) fn as_string(&self) -> Option<String> {
+        if self.format != node_format::STRING {
+            return None;
+        }
+        // SAFETY: the union member is valid for MPV_FORMAT_STRING nodes and the
+        // pointer is owned by the node tree.
+        unsafe {
+            let text = self.u.string;
+            if text.is_null() {
+                return None;
+            }
+            Some(
+                std::ffi::CStr::from_ptr(text)
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        }
+    }
+
+    pub(crate) fn as_i64(&self) -> Option<i64> {
+        if self.format != node_format::INT64 {
+            return None;
+        }
+        // SAFETY: the union member is valid for MPV_FORMAT_INT64 nodes.
+        Some(unsafe { self.u.int64 })
+    }
+
+    /// Returns the value stored under `key` in this `MPV_FORMAT_NODE_MAP` node.
+    pub(crate) fn map_get(&self, key: &str) -> Option<&MpvNode> {
+        if self.format != node_format::NODE_MAP {
+            return None;
+        }
+        // SAFETY: the union member is valid for MPV_FORMAT_NODE_MAP nodes and
+        // points at a list whose entries live as long as the node tree.
+        unsafe {
+            let list = self.u.list;
+            if list.is_null() {
+                return None;
+            }
+            let list = &*list;
+            if list.num <= 0 || list.values.is_null() || list.keys.is_null() {
+                return None;
+            }
+            for index in 0..list.num as usize {
+                let name = *list.keys.add(index);
+                if name.is_null() {
+                    continue;
+                }
+                if std::ffi::CStr::from_ptr(name).to_str().ok()? == key {
+                    return Some(&*list.values.add(index));
+                }
+            }
+            None
+        }
+    }
+
+    pub(crate) fn as_bytes(&self) -> Option<&[u8]> {
+        if self.format != node_format::BYTE_ARRAY {
+            return None;
+        }
+        // SAFETY: the union member holds a byte array owned by the node tree; the
+        // returned slice is bounded by its reported size.
+        unsafe {
+            let array = *self.u.byte_array;
+            if array.data.is_null() || array.size == 0 {
+                return None;
+            }
+            Some(std::slice::from_raw_parts(
+                array.data.cast::<u8>(),
+                array.size,
+            ))
+        }
+    }
+}
+
+/// Builds the `MPV_FORMAT_NODE_ARRAY` command vector expected by
+/// `mpv_command_node` (`["screenshot-raw", "video"]` etc).
+///
+/// The returned `CString`s own the text the nodes point at and must outlive the
+/// nodes, so both are handed back together. The list itself lives in `list` and
+/// must stay on the caller's stack while the command runs.
+pub(crate) fn command_argv(args: &[&str]) -> (Vec<MpvNode>, Vec<std::ffi::CString>, MpvNodeList) {
+    let owned: Vec<std::ffi::CString> = args
+        .iter()
+        .filter_map(|arg| std::ffi::CString::new(*arg).ok())
+        .collect();
+    let values: Vec<MpvNode> = owned
+        .iter()
+        .map(|text| MpvNode {
+            u: MpvNodeUnion {
+                string: text.as_ptr().cast_mut(),
+            },
+            format: node_format::STRING,
+        })
+        .collect();
+    let list = MpvNodeList {
+        num: values.len() as std::ffi::c_int,
+        values: values.as_ptr().cast_mut(),
+        keys: std::ptr::null_mut(),
+    };
+    (values, owned, list)
+}
+
 /// Raw `mpv_event` returned by `mpv_wait_event`.
 ///
 /// Mirrors `libmpv/client.h`; the extra fields are part of the C layout.
@@ -137,6 +291,10 @@ mpv_api! {
     initialize: "mpv_initialize", b"mpv_initialize\0" => fn(MpvHandle) -> c_int;
     command: "mpv_command", b"mpv_command\0" =>
         fn(MpvHandle, *const *const c_char) -> c_int;
+    command_node: "mpv_command_node", b"mpv_command_node\0" =>
+        fn(MpvHandle, *mut MpvNode, *mut MpvNode) -> c_int;
+    free_node_contents: "mpv_free_node_contents", b"mpv_free_node_contents\0" =>
+        fn(*mut MpvNode) -> ();
     command_string: "mpv_command_string", b"mpv_command_string\0" =>
         fn(MpvHandle, *const c_char) -> c_int;
     set_property: "mpv_set_property", b"mpv_set_property\0" =>

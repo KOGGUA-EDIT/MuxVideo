@@ -258,6 +258,11 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
             if (target - last_target).abs() >= 0.25 / fps {
                 app.scrub = Some(target);
                 app.media.seek_all(target);
+                // Show the closest decoded frame we already have so the drag
+                // never freezes while libmpv replays from a keyframe.
+                let frame = crate::app::state::frame_at(target, fps);
+                let window = (fps * 1.5).round().max(1.0) as u64;
+                app.media.show_cached(plane, frame, window);
                 let total = crate::app::state::frame_at(duration, fps);
                 app.toast = Some(crate::app::state::Toast::info(format!(
                     "{} {} / {}",
@@ -269,7 +274,6 @@ fn drag_to(app: &mut MuxApp, ctx: &egui::Context, x: i32, y: i32) {
                     drag.last_target = target;
                 }
             }
-            let _ = plane;
         }
         Mode::Wipe => {
             if let Some((w, h)) = app.media.plane_size(drag.plane) {
@@ -303,6 +307,7 @@ fn release(app: &mut MuxApp, ctx: &egui::Context) {
     if drag.mode == Mode::Scrub {
         // Scrubbing leaves the player parked on the frame under the cursor.
         app.scrub = None;
+        app.media.hide_preview();
         if drag.moved || !quick {
             return;
         }

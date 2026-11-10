@@ -789,6 +789,20 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                     .size(11.0)
                     .color(p.outline),
                 );
+                ui.add_space(4.0);
+                let (cached_frames, cached_bytes, cache_hits) = app.media.cache_stats();
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} {} · {} MB · {} {}",
+                        app.t("擦洗缓存", "Scrub cache"),
+                        cached_frames,
+                        cached_bytes / (1024 * 1024),
+                        app.t("命中", "hits"),
+                        cache_hits
+                    ))
+                    .size(11.0)
+                    .color(p.outline),
+                );
                 ui.add_space(10.0);
                 ui.horizontal(|ui| {
                     ui.label(

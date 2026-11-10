@@ -9,6 +9,7 @@ pub mod icons;
 mod input;
 mod open_dialog;
 mod panels;
+pub mod scrub;
 pub mod stage;
 pub mod state;
 pub mod window;
@@ -222,8 +223,8 @@ impl MuxApp {
     pub(super) fn active_player(&self) -> Option<&crate::mpv::MpvPlayer> {
         self.media
             .player_a
-            .as_ref()
-            .or(self.media.player_b.as_ref())
+            .as_deref()
+            .or(self.media.player_b.as_deref())
     }
 
     pub(super) fn duration(&self) -> f64 {
@@ -1191,6 +1192,7 @@ impl eframe::App for MuxApp {
             });
 
         self.sync_stage(ctx);
+        self.pump_scrub_cache();
         self.toast_layer(ctx);
         self.maybe_save();
 
@@ -1208,6 +1210,30 @@ impl eframe::App for MuxApp {
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
         self.settings.save();
+    }
+}
+
+impl MuxApp {
+    /// Keeps the scrub cache fed and drops the cached-frame overlay as soon as
+    /// libmpv shows the real frame again.
+    fn pump_scrub_cache(&mut self) {
+        let playing = self.is_playing();
+        let scrubbing = self.scrub.is_some();
+        self.media.cache_tick(playing, scrubbing);
+        if !scrubbing {
+            self.media.hide_preview();
+            return;
+        }
+        // The overlay is only a stand-in: once the player sits on the requested
+        // time, let the real (full resolution) frame show through.
+        let (Some(target), Some(player)) = (self.scrub, self.media.player_a.as_ref()) else {
+            self.media.hide_preview();
+            return;
+        };
+        let fps = self.fps();
+        if (player.time_pos() - target).abs() < 0.5 / fps.max(1.0) {
+            self.media.hide_preview();
+        }
     }
 }
 

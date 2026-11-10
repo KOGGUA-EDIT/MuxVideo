@@ -18,8 +18,82 @@ use anyhow::{Context, bail};
 use crate::mpv::MpvEvent;
 use crate::mpv::lib::{
     Api, LibMpv, MpvEventEndFile, MpvEventLogMessage, MpvEventProperty, MpvEventRaw, MpvHandle,
-    event_id, format,
+    MpvNode, event_id, format,
 };
+
+/// One frame grabbed straight from mpv through `screenshot-raw`.
+///
+/// Pixels stay in the row order mpv produced (`format` is `bgr0`, `rgb0`,
+/// `rgba`, `bgra`, …) so grabbing costs one readback and no conversion.
+#[derive(Clone)]
+pub struct RawFrame {
+    pub width: u32,
+    pub height: u32,
+    /// Bytes per row; larger than `width * 4` for padded rows.
+    pub stride: usize,
+    pub format: String,
+    pub data: Vec<u8>,
+}
+
+impl RawFrame {
+    fn from_node(node: &MpvNode) -> Option<Self> {
+        let width = node.map_get("w")?.as_i64()? as u32;
+        let height = node.map_get("h")?.as_i64()? as u32;
+        let stride = node.map_get("stride")?.as_i64()? as usize;
+        let format = node.map_get("format")?.as_string()?;
+        let data = node.map_get("data")?.as_bytes()?.to_vec();
+        if width == 0 || height == 0 || data.len() < stride.checked_mul(height as usize)? {
+            return None;
+        }
+        Some(Self {
+            width,
+            height,
+            stride,
+            format,
+            data,
+        })
+    }
+
+    /// Bytes per pixel implied by [`Self::format`].
+    fn bytes_per_pixel(&self) -> usize {
+        match self.format.as_str() {
+            "rgb24" | "bgr24" => 3,
+            "rgba64" | "bgra64" => 8,
+            _ => 4,
+        }
+    }
+
+    /// Converts to tightly packed RGBA8, top row first (egui's texture order).
+    pub fn to_rgba(&self) -> Option<Vec<u8>> {
+        let bpp = self.bytes_per_pixel();
+        let row_bytes = (self.width as usize).checked_mul(bpp)?;
+        if row_bytes > self.stride {
+            return None;
+        }
+        let mut out = vec![0u8; (self.width as usize) * (self.height as usize) * 4];
+        let source_has_alpha =
+            matches!(self.format.as_str(), "rgba" | "bgra" | "rgba64" | "bgra64");
+        let swap = matches!(self.format.as_str(), "bgr0" | "bgr24" | "bgra" | "bgra64");
+        for y in 0..self.height as usize {
+            let src = &self.data[y * self.stride..y * self.stride + row_bytes];
+            for x in 0..self.width as usize {
+                let s = x * bpp;
+                let (r, g, b, a) = if swap {
+                    (src[s + 2], src[s + 1], src[s], src[s + 3])
+                } else {
+                    (src[s], src[s + 1], src[s + 2], src[s + 3])
+                };
+                let alpha = if source_has_alpha { a } else { 255 };
+                let d = (y * self.width as usize + x) * 4;
+                out[d] = r;
+                out[d + 1] = g;
+                out[d + 2] = b;
+                out[d + 3] = alpha;
+            }
+        }
+        Some(out)
+    }
+}
 
 /// Upper bound on buffered events. The queue drops the oldest entry when full so
 /// a stalled UI can never grow memory without bound.
@@ -561,6 +635,74 @@ impl MpvPlayer {
         // strings that all outlive the call.
         unsafe { (api.command)(self.handle(), pointers.as_ptr()) >= 0 }
     }
+
+    /// Runs a command through the node API and returns its string result.
+    ///
+    /// Diagnostic helper: `command_node_str(&["get_property", "time-pos"])`.
+    pub fn command_node_str(&self, args: &[&str]) -> (i32, Option<String>) {
+        let api = self.lib.api();
+        let (mut values, _owned, mut list) = crate::mpv::lib::command_argv(args);
+        let mut node = crate::mpv::lib::MpvNode {
+            u: crate::mpv::lib::MpvNodeUnion { list: &mut list },
+            format: crate::mpv::lib::node_format::NODE_ARRAY,
+        };
+        let mut result = crate::mpv::lib::MpvNode {
+            u: crate::mpv::lib::MpvNodeUnion { int64: 0 },
+            format: crate::mpv::lib::node_format::NONE,
+        };
+        // SAFETY: both nodes stay alive for the call and `values` backs the list.
+        let rc = unsafe { (api.command_node)(self.handle(), &mut node, &mut result) };
+        let text = if rc >= 0 { result.as_string() } else { None };
+        if rc >= 0 {
+            // SAFETY: the result tree was filled in for this call.
+            unsafe { (api.free_node_contents)(&mut result) };
+        }
+        let _ = &mut values;
+        (rc, text)
+    }
+
+    /// Grabs the frame mpv is showing right now as raw pixels.
+    ///
+    /// Uses the `screenshot-raw` node command, so no PNG encoding happens; this
+    /// is the cheap primitive behind the scrub cache. `format` is one of
+    /// `rgb0` / `bgr0` / `rgba` / `bgra` / `rgb24`.
+    pub fn screenshot_raw(&self) -> Option<RawFrame> {
+        self.screenshot_raw_with("video")
+    }
+
+    /// [`Self::screenshot_raw`] with an explicit mpv screenshot mode.
+    pub fn screenshot_raw_with(&self, mode: &str) -> Option<RawFrame> {
+        let api = self.lib.api();
+        let (mut values, _owned, mut list) =
+            crate::mpv::lib::command_argv(&["screenshot-raw", mode]);
+        let mut node = crate::mpv::lib::MpvNode {
+            u: crate::mpv::lib::MpvNodeUnion { list: &mut list },
+            format: crate::mpv::lib::node_format::NODE_ARRAY,
+        };
+        let mut result = crate::mpv::lib::MpvNode {
+            u: crate::mpv::lib::MpvNodeUnion { int64: 0 },
+            format: crate::mpv::lib::node_format::NONE,
+        };
+        // SAFETY: both nodes stay alive for the call; `values` backs the list
+        // the array node points at. The result tree is freed right after copying
+        // the pixels out.
+        let rc = unsafe { (api.command_node)(self.handle(), &mut node, &mut result) };
+        if rc < 0 {
+            let message = unsafe { (api.error_string)(rc) };
+            let text = unsafe { CStr::from_ptr(message) }
+                .to_string_lossy()
+                .into_owned();
+            #[cfg(debug_assertions)]
+            eprintln!("[mpv] screenshot-raw failed: {rc} {text}");
+            return None;
+        }
+        let frame = RawFrame::from_node(&result);
+        // SAFETY: `result` was filled in by libmpv for this call and is freed
+        // exactly once here.
+        unsafe { (api.free_node_contents)(&mut result) };
+        let _ = &mut values;
+        frame
+    }
 }
 
 impl Drop for MpvPlayer {
@@ -620,6 +762,13 @@ fn apply_options(api: &Api, handle: MpvHandle, wid: i64, opts: &MpvOptions) -> a
         ("cache", "yes".to_owned()),
         ("cache-secs", opts.cache_secs.to_string()),
         ("demuxer-max-bytes", "256MiB".to_owned()),
+        // Keep demuxed packets behind the play position so dragging backwards
+        // does not have to hit the disk again; decoding still restarts at the
+        // previous keyframe, which is what the scrub cache covers.
+        ("demuxer-max-back-bytes", "192MiB".to_owned()),
+        ("demuxer-readahead-secs", "20".to_owned()),
+        // Exact seeks keep the picture on the frame under the cursor.
+        ("hr-seek", "yes".to_owned()),
         (
             "loop-file",
             if opts.loop_file { "inf" } else { "no" }.to_owned(),

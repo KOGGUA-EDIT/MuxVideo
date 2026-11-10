@@ -21,10 +21,11 @@ use windows_sys::Win32::Foundation::{
     ERROR_CLASS_ALREADY_EXISTS, GetLastError, HINSTANCE, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM,
 };
 use windows_sys::Win32::Graphics::Gdi::{
-    BLACK_BRUSH, BeginPaint, ClientToScreen, CombineRgn, CreatePen, CreateRectRgn,
-    CreateRoundRectRgn, CreateSolidBrush, DeleteObject, EndPaint, FillRect, GetDC, GetStockObject,
-    InvalidateRect, LineTo, MoveToEx, PAINTSTRUCT, RGN_OR, ReleaseDC, ScreenToClient, SelectObject,
-    SetWindowRgn, ValidateRect,
+    BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLACK_BRUSH, BeginPaint, ClientToScreen, CombineRgn,
+    CreatePen, CreateRectRgn, CreateRoundRectRgn, CreateSolidBrush, DIB_RGB_COLORS, DeleteObject,
+    EndPaint, FillRect, GetDC, GetStockObject, InvalidateRect, LineTo, MoveToEx, PAINTSTRUCT,
+    RGN_OR, ReleaseDC, SRCCOPY, ScreenToClient, SelectObject, SetWindowRgn, StretchDIBits,
+    ValidateRect,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
@@ -47,6 +48,160 @@ const CLASS_NAME: &str = "MuxVideoSurface";
 
 /// Window class name of the wipe grip handle.
 const GRIP_CLASS: &str = "MuxVideoGrip";
+
+/// Window class name of the scrub preview surface.
+///
+/// The preview is a plain opaque child window that blits a cached frame while
+/// libmpv is still seeking, so dragging backwards shows a picture instead of a
+/// frozen last frame.
+const PREVIEW_CLASS: &str = "MuxVideoPreview";
+
+/// One cached frame ready to be blitted: BGRA rows, top row first.
+pub struct PreviewFrame {
+    pub width: u32,
+    pub height: u32,
+    /// Bytes per row (at least `width * 4`).
+    pub stride: usize,
+    pub bgra: std::sync::Arc<Vec<u8>>,
+}
+
+/// Frame currently attached to each preview window.
+fn preview_frames()
+-> &'static std::sync::Mutex<std::collections::HashMap<i64, std::sync::Arc<PreviewFrame>>> {
+    static FRAMES: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<i64, std::sync::Arc<PreviewFrame>>>,
+    > = std::sync::OnceLock::new();
+    FRAMES.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Attaches `frame` to preview window `hwnd` and repaints it.
+pub fn set_preview_frame(hwnd: i64, frame: std::sync::Arc<PreviewFrame>) {
+    if let Ok(mut frames) = preview_frames().lock() {
+        frames.insert(hwnd, frame);
+    }
+    // SAFETY: invalidating a window this process owns is always allowed.
+    unsafe { InvalidateRect(hwnd as HWND, std::ptr::null(), 0) };
+}
+
+/// Forgets the frame attached to `hwnd` (the window keeps the last pixels).
+pub fn clear_preview_frame(hwnd: i64) {
+    if let Ok(mut frames) = preview_frames().lock() {
+        frames.remove(&hwnd);
+    }
+}
+
+/// Paints a preview window: stretches the cached frame over the whole client
+/// area, or fills black when nothing is attached.
+unsafe extern "system" fn preview_wndproc(
+    hwnd: HWND,
+    message: u32,
+    wparam: WPARAM,
+    lparam: LPARAM,
+) -> LRESULT {
+    match message {
+        WM_ERASEBKGND => 1, // painted in WM_PAINT; skip the flicker
+        WM_PAINT => {
+            let mut paint = PAINTSTRUCT::default();
+            // SAFETY: BeginPaint requires a window being painted; `paint` is
+            // stack storage owned by this frame.
+            let dc = unsafe { BeginPaint(hwnd, &mut paint) };
+            if !dc.is_null() {
+                let mut rect = RECT::default();
+                // SAFETY: client rect of a live window.
+                unsafe { GetClientRect(hwnd, &mut rect) };
+                let width = (rect.right - rect.left).max(0);
+                let height = (rect.bottom - rect.top).max(0);
+                let frame = preview_frames()
+                    .lock()
+                    .ok()
+                    .and_then(|frames| frames.get(&(hwnd as i64)).cloned());
+                // SAFETY: brushes and DIBs are created and released in this
+                // scope; the DC is valid until EndPaint.
+                unsafe {
+                    match frame {
+                        Some(frame) if width > 0 && height > 0 => {
+                            let info = BITMAPINFO {
+                                bmiHeader: BITMAPINFOHEADER {
+                                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                                    biWidth: frame.width as i32,
+                                    // Negative height: rows are stored top-down.
+                                    biHeight: -(frame.height as i32),
+                                    biPlanes: 1,
+                                    biBitCount: 32,
+                                    biCompression: BI_RGB,
+                                    ..BITMAPINFOHEADER::default()
+                                },
+                                ..BITMAPINFO::default()
+                            };
+                            StretchDIBits(
+                                dc,
+                                0,
+                                0,
+                                width,
+                                height,
+                                0,
+                                0,
+                                frame.width as i32,
+                                frame.height as i32,
+                                frame.bgra.as_ptr().cast(),
+                                &info,
+                                DIB_RGB_COLORS,
+                                SRCCOPY,
+                            );
+                        }
+                        _ => {
+                            let black = CreateSolidBrush(0);
+                            if !black.is_null() {
+                                FillRect(dc, &rect, black);
+                                DeleteObject(black);
+                            }
+                        }
+                    }
+                }
+                // SAFETY: pairs with BeginPaint above.
+                unsafe { EndPaint(hwnd, &paint) };
+            }
+            0
+        }
+        _ => {
+            // SAFETY: default handling for every message we do not paint.
+            unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+        }
+    }
+}
+
+/// Registers the preview window class exactly once per process.
+fn ensure_preview_class() -> anyhow::Result<()> {
+    static REGISTERED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if REGISTERED.get().is_some() {
+        return Ok(());
+    }
+    // SAFETY: current-executable handle, alive for the process lifetime.
+    let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
+    if instance.is_null() {
+        bail!("GetModuleHandleW(NULL) failed");
+    }
+    let class_name = wide(PREVIEW_CLASS);
+    let window_class = WNDCLASSW {
+        style: CS_HREDRAW | CS_VREDRAW,
+        lpfnWndProc: Some(preview_wndproc),
+        hInstance: instance,
+        // SAFETY: `class_name` outlives the call.
+        lpszClassName: class_name.as_ptr(),
+        ..WNDCLASSW::default()
+    };
+    // SAFETY: `window_class` is fully initialised and its name outlives the call.
+    let atom = unsafe { RegisterClassW(&window_class) };
+    if atom == 0 {
+        let error = unsafe { GetLastError() };
+        // A class registered by an earlier call is fine.
+        if error != ERROR_CLASS_ALREADY_EXISTS {
+            bail!("RegisterClassW({PREVIEW_CLASS}) failed (Win32 error {error})");
+        }
+    }
+    let _ = REGISTERED.set(());
+    Ok(())
+}
 
 /// Handle colours, as `0x00BBGGRR` (Win32 `COLORREF`).
 static GRIP_BG: AtomicU32 = AtomicU32::new(0x00FF_BCD0);
@@ -1087,6 +1242,49 @@ impl ChildWindow {
         }
 
         install_input_hook(hwnd as isize as i64);
+        Ok(Self { hwnd })
+    }
+
+    /// Creates the scrub preview surface (opaque, blits cached frames).
+    pub fn create_preview(parent: i64, id: u32, name: &str) -> anyhow::Result<Self> {
+        ensure_preview_class()?;
+
+        // SAFETY: current-executable handle, alive for the process lifetime.
+        let instance = unsafe { GetModuleHandleW(std::ptr::null()) };
+        if instance.is_null() {
+            bail!("GetModuleHandleW(NULL) failed");
+        }
+
+        let parent = parent as usize as HWND;
+        if parent.is_null() {
+            bail!("cannot create {PREVIEW_CLASS}: parent handle is NULL");
+        }
+
+        let class_name = wide(PREVIEW_CLASS);
+        let title = wide(name);
+        // SAFETY: both UTF-16 strings are live for the call; the class is
+        // registered and `parent` is a live window of ours.
+        let hwnd = unsafe {
+            CreateWindowExW(
+                0,
+                class_name.as_ptr(),
+                title.as_ptr(),
+                WS_CHILD | WS_CLIPSIBLINGS,
+                0,
+                0,
+                64,
+                64,
+                parent,
+                id as usize as HMENU,
+                instance,
+                std::ptr::null(),
+            )
+        };
+        if hwnd.is_null() {
+            // SAFETY: no arguments, always safe to call.
+            let error = unsafe { GetLastError() };
+            bail!("CreateWindowExW({PREVIEW_CLASS}) failed (Win32 error {error})");
+        }
         Ok(Self { hwnd })
     }
 
