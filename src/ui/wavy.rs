@@ -37,11 +37,11 @@ const TRACK_INSET: f32 = 10.0;
 const HEIGHT: f32 = 40.0;
 
 /// Peak wave displacement from the track centre line (M3: 3.5 dp crest).
-const WAVE_AMPLITUDE: f32 = 5.5;
+const WAVE_AMPLITUDE: f32 = 6.0;
 /// Distance between wave crests (M3 determinate linear: 28 dp).
-const WAVE_LENGTH: f32 = 52.0;
+const WAVE_LENGTH: f32 = 76.0;
 /// Scroll speed of the wave: one wavelength per second, as M3 does.
-const PHASE_SPEED: f32 = 40.0;
+const PHASE_SPEED: f32 = 46.0;
 /// Seconds the wave takes to morph from flat to wavy (and back).
 const WAVE_ANIMATION: f32 = 0.30;
 /// Horizontal distance over which the wave ramps in from the flat start.
