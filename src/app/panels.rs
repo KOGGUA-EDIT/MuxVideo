@@ -424,6 +424,9 @@ fn playlist_row(
             app.t("载入 B 面", "Load into B")
         });
     }
+    // The whole row is the hit target, so the ripple has to hop from the row
+    // too — otherwise a click on the name line gives no feedback at all.
+    controls::ripple(ui, &response, rect.shrink2(vec2(2.0, 1.0)), name_color);
     response
 }
 

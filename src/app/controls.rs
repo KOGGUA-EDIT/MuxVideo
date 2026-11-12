@@ -16,6 +16,17 @@ use crate::ui::Palette;
 /// Drawn after the widget so it tints the fill and the glyph alike, then the
 /// animation clock keeps repainting until it has faded out.
 pub fn ripple(ui: &Ui, resp: &Response, rect: Rect, color: Color32) {
+    ripple_in(ui, resp, rect, color, None)
+}
+
+/// Ripple for a circular button: the circle is capped to the button's own
+/// radius, otherwise egui's rectangular clip lets it paint square corners
+/// outside the round state layer.
+pub fn ripple_round(ui: &Ui, resp: &Response, rect: Rect, color: Color32) {
+    ripple_in(ui, resp, rect, color, Some(rect.width().min(rect.height()) * 0.5))
+}
+
+fn ripple_in(ui: &Ui, resp: &Response, rect: Rect, color: Color32, round: Option<f32>) {
     const DURATION: f64 = 0.70;
     thread_local! {
         static RIPPLES: std::cell::RefCell<std::collections::HashMap<egui::Id, (egui::Pos2, f64)>> =
@@ -35,19 +46,26 @@ pub fn ripple(ui: &Ui, resp: &Response, rect: Rect, color: Color32) {
     if pressed_here && let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
         RIPPLES.with(|m| m.borrow_mut().insert(id, (pos, now)));
     }
-    let Some((origin, t0)) = RIPPLES.with(|m| m.borrow().get(&id).copied()) else {
+    let Some((press, t0)) = RIPPLES.with(|m| m.borrow().get(&id).copied()) else {
         return;
     };
     let t = ((now - t0) / DURATION) as f32;
     if !(0.0..1.0).contains(&t) {
         return;
     }
-    // Grow past the farthest corner so the whole shape is covered by the end,
-    // while the alpha falls off faster than the radius grows.
-    let far = [rect.min, rect.max, pos2(rect.min.x, rect.max.y), pos2(rect.max.x, rect.min.y)]
-        .iter()
-        .map(|corner| corner.distance(origin))
-        .fold(0.0_f32, f32::max);
+    // A round control cannot show a press-anchored circle without spilling into
+    // the square corners its clip allows, so it fills from the centre instead;
+    // every other shape grows from where the pointer went down.
+    let (origin, far) = match round {
+        Some(radius) => (rect.center(), radius),
+        None => {
+            let far = [rect.min, rect.max, pos2(rect.min.x, rect.max.y), pos2(rect.max.x, rect.min.y)]
+                .iter()
+                .map(|corner| corner.distance(press))
+                .fold(0.0_f32, f32::max);
+            (press, far)
+        }
+    };
     let eased = 1.0 - (1.0 - t).powi(2);
     let alpha = (1.0 - t).powi(2) * 0.30;
     ui.painter()
@@ -98,7 +116,7 @@ pub fn icon_button(
         palette.on_surface_variant
     };
     glyph(&mut child, icon_size, fg);
-    ripple(ui, &response, rect, palette.on_surface);
+    ripple_round(ui, &response, rect, palette.on_surface);
     response
 }
 
@@ -334,7 +352,6 @@ pub fn chip_row(
         );
         ui.painter()
             .galley(item.center() - galley.size() * 0.5, galley, color);
-        ripple(ui, &response, *item, palette.on_secondary_container);
     }
     clicked
 }
