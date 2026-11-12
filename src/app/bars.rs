@@ -706,10 +706,14 @@ fn play_button(ui: &mut Ui, app: &MuxApp) -> egui::Response {
     } else {
         icons::play(&mut child, 24.0, p.on_primary);
     }
+    controls::ripple(ui, &response, rect, p.on_primary);
     response
 }
 
 const SPEEDS: [f64; 8] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0];
+/// Width shared by the rate chip and the drawer under it, so the drawer looks
+/// like it was pulled straight out of the chip.
+const SPEED_MENU_W: f32 = 84.0;
 
 /// Playback transport: scrubber on top, controls underneath.
 pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
@@ -810,7 +814,7 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
         pos2(inner.max.x, inner.max.y),
     );
     // Filled in by the speed chip so the rate menu can hang off it afterwards.
-    let mut speed_anchor = Rect::NOTHING;
+    let mut speed_anchor: Option<SpeedChip> = None;
     ui.scope_builder(
         UiBuilder::new()
             .max_rect(row2)
@@ -947,13 +951,13 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
                 ui.add_space(8.0);
 
                 // Speed: the chip pulls up a menu of the common rates.
-                speed_anchor = speed_chip(ui, app, &p);
+                speed_anchor = Some(speed_chip(ui, app, &p));
             });
         },
     );
 
-    if speed_anchor != Rect::NOTHING {
-        speed_menu(ui, app, &p, speed_anchor, row1);
+    if let Some(chip) = speed_anchor {
+        speed_menu(ui, app, &p, chip);
     }
 
     // Transient feedback (volume / zoom). Drawn over the transport because the
@@ -983,14 +987,14 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
 }
 
 /// Playback-rate chip: shows the rate plus a chevron that flips while the menu
-/// is open. Returns its rect so the menu can hang off it.
-fn speed_chip(ui: &mut Ui, app: &mut MuxApp, p: &crate::ui::Palette) -> Rect {
+/// is open. Returns its paint so the menu can re-draw the chip on top of itself.
+fn speed_chip(ui: &mut Ui, app: &mut MuxApp, p: &crate::ui::Palette) -> SpeedChip {
     let ctx = ui.ctx().clone();
     let label = format!("{}×", trim_speed(app.settings.speed));
     let galley = ui
         .painter()
         .layout_no_wrap(label.clone(), FontId::proportional(14.0), p.on_surface);
-    let size = vec2(galley.size().x + 42.0, 32.0);
+    let size = vec2((galley.size().x + 42.0).max(SPEED_MENU_W), 32.0);
     let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
 
     let hover = ctx.animate_bool_with_time(resp.id.with("hover"), resp.hovered(), 0.1);
@@ -1001,8 +1005,8 @@ fn speed_chip(ui: &mut Ui, app: &mut MuxApp, p: &crate::ui::Palette) -> Rect {
     } else {
         p.surface_container_high
     };
-    ui.painter()
-        .rect_filled(rect, CornerRadius::same(8), controls::mix(base, p.on_surface, hover * 0.08));
+    let fill = controls::mix(base, p.on_surface, hover * 0.08);
+    ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
     let fg = if lit {
         p.on_secondary_container
     } else {
@@ -1033,79 +1037,119 @@ fn speed_chip(ui: &mut Ui, app: &mut MuxApp, p: &crate::ui::Palette) -> Rect {
     if resp.hovered() {
         app.hover_hint = Some(app.t("播放速度", "Playback speed"));
     }
-    rect
+    controls::ripple(ui, &resp, rect, fg);
+    SpeedChip { rect, fill, fg }
 }
 
-/// Rate menu: a strip that rises into the scrubber row above the chip, so it
-/// stays inside the egui area and never lands under the native video surface.
-fn speed_menu(ui: &mut Ui, app: &mut MuxApp, p: &crate::ui::Palette, anchor: Rect, band: Rect) {
+/// What the chip painted, so the drawer can put the chip back on top of itself
+/// and hide the sheet's bottom corners behind the pill.
+#[derive(Clone, Copy)]
+struct SpeedChip {
+    rect: Rect,
+    fill: egui::Color32,
+    fg: egui::Color32,
+}
+
+/// Rate menu: a vertical drawer that slides out from underneath the chip and
+/// retracts back down once a rate is picked. It has to be painted on a
+/// foreground layer — the native video surface is composited on top of egui,
+/// and the transport panel would clip a list this tall.
+fn speed_menu(ui: &mut Ui, app: &mut MuxApp, p: &crate::ui::Palette, chip: SpeedChip) {
     let ctx = ui.ctx().clone();
-    let t = ctx.animate_bool_with_time(ui.id().with("speed-menu"), app.speed_menu, 0.16);
+    let anchor = chip.rect;
+    let t = ctx.animate_bool_with_time(ui.id().with("speed-menu"), app.speed_menu, 0.18);
     if !app.speed_menu && t <= 0.001 {
         return;
     }
 
-    let item_w = 50.0;
     let gap = 2.0;
     let pad = 6.0;
     let n = SPEEDS.len() as f32;
-    let w = n * item_w + (n - 1.0) * gap + pad * 2.0;
-    let h = band.height().max(36.0);
-    let left = (anchor.max.x - w).max(band.min.x + 4.0);
-    let top = band.min.y + (1.0 - t) * 8.0;
-    let rect = Rect::from_min_size(pos2(left, top), vec2(w, h));
-
-    ui.painter().rect_filled(
-        rect,
-        CornerRadius::same(16),
-        p.surface_container_high.gamma_multiply(t),
+    let item_h = 32.0;
+    let w = SPEED_MENU_W;
+    let h = n * item_h + (n - 1.0) * gap + pad * 2.0;
+    // The sheet tucks 8 px into the chip and is then covered by it, so its
+    // bottom corners never peek out around the pill.
+    let bottom = anchor.max.y - 8.0;
+    let rect = Rect::from_min_size(pos2(anchor.max.x - w, bottom - h), vec2(w, h));
+    // Fast-out pull: most of the travel happens in the first frames, then it
+    // settles — reads as yanking a drawer open.
+    let s = 1.0 - (1.0 - t).powi(3);
+    let plate = rect.translate(vec2(0.0, (1.0 - s) * (h + 6.0)));
+    // Nothing may show below the chip: that band is the pill's own territory and
+    // the pill is painted back over it anyway.
+    let clip = Rect::from_min_max(
+        pos2(plate.min.x - 12.0, anchor.min.y - h - 10.0),
+        pos2(plate.max.x + 12.0, anchor.max.y),
     );
-
+    let pointer = ctx.input(|i| i.pointer.interact_pos());
+    let clicked = ctx.input(|i| i.pointer.any_click());
+    let speed_now = app.settings.speed;
     let mut chosen: Option<f64> = None;
-    for (i, speed) in SPEEDS.iter().enumerate() {
-        let item = Rect::from_min_size(
-            pos2(left + pad + i as f32 * (item_w + gap), top + 4.0),
-            vec2(item_w, h - 8.0),
-        );
-        let resp = ui.interact(item, ui.id().with(("speed-item", i)), Sense::click());
-        if resp.hovered() {
-            ui.painter().rect_filled(
-                item,
-                CornerRadius::same(10),
-                p.on_surface.gamma_multiply(0.08 * t),
+    // An `Area` puts the sheet on its own layer above every panel, which a bare
+    // `layer_painter` call does not guarantee.
+    egui::Area::new(egui::Id::new("speed-menu-area"))
+        .order(egui::Order::Foreground)
+        .fixed_pos(rect.min)
+        .interactable(false)
+        .show(&ctx, |ui| {
+            let painter = ui.painter().with_clip_rect(clip);
+            painter.rect_filled(plate, CornerRadius::same(16), p.surface_container_high);
+            for (i, speed) in SPEEDS.iter().enumerate() {
+                let item = Rect::from_min_size(
+                    pos2(plate.min.x + pad, plate.min.y + pad + i as f32 * (item_h + gap)),
+                    vec2(w - pad * 2.0, item_h),
+                );
+                let hovered = s > 0.5 && pointer.is_some_and(|pos| item.contains(pos));
+                if hovered {
+                    painter.rect_filled(
+                        item,
+                        CornerRadius::same(10),
+                        p.on_surface.gamma_multiply(0.08),
+                    );
+                }
+                let current = (speed_now - *speed).abs() < 0.001;
+                let col = if current { p.primary } else { p.on_surface };
+                painter.text(
+                    pos2(item.min.x + 12.0, item.center().y),
+                    egui::Align2::LEFT_CENTER,
+                    format!("{}×", trim_speed(*speed)),
+                    FontId::proportional(14.0),
+                    col,
+                );
+                if current {
+                    painter.circle_filled(pos2(item.max.x - 12.0, item.center().y), 3.0, p.primary);
+                }
+                if hovered && clicked {
+                    chosen = Some(*speed);
+                }
+            }
+            // Put the chip back on top: the sheet runs underneath the pill, so
+            // its rounded bottom edge is swallowed instead of peeking out.
+            painter.rect_filled(anchor, CornerRadius::same(8), chip.fill);
+            painter.text(
+                pos2(anchor.min.x + 12.0, anchor.center().y),
+                egui::Align2::LEFT_CENTER,
+                format!("{}×", trim_speed(speed_now)),
+                FontId::proportional(14.0),
+                chip.fg,
             );
-        }
-        let current = (app.settings.speed - *speed).abs() < 0.001;
-        let col = if current { p.primary } else { p.on_surface };
-        ui.painter().text(
-            pos2(item.center().x, item.center().y - 1.0),
-            egui::Align2::CENTER_CENTER,
-            format!("{}×", trim_speed(*speed)),
-            FontId::proportional(13.0),
-            col.gamma_multiply(t),
-        );
-        if current {
-            ui.painter().circle_filled(
-                pos2(item.center().x, item.max.y - 5.0),
-                1.8,
-                p.primary.gamma_multiply(t),
-            );
-        }
-        if resp.clicked() && t > 0.5 {
-            chosen = Some(*speed);
-        }
-    }
+            let c = pos2(anchor.max.x - 16.0, anchor.center().y);
+            let ang = std::f32::consts::PI * t;
+            let (sy, co) = ang.sin_cos();
+            let pt = |dx: f32, dy: f32| pos2(c.x + dx * co - dy * sy, c.y + dx * sy + dy * co);
+            let stroke = egui::Stroke::new(1.5_f32, chip.fg);
+            painter.line_segment([pt(-4.5, 2.0), pt(0.0, -2.5)], stroke);
+            painter.line_segment([pt(0.0, -2.5), pt(4.5, 2.0)], stroke);
+        });
 
     if let Some(speed) = chosen {
         app.settings.speed = speed;
         app.apply_speed();
         app.speed_menu = false;
-    }
-    if app.speed_menu {
-        let clicked_outside = ctx.input(|i| i.pointer.any_click())
-            && ctx
-                .input(|i| i.pointer.interact_pos())
-                .is_some_and(|pos| !rect.contains(pos) && !anchor.contains(pos));
+    } else if app.speed_menu {
+        let clicked_outside = clicked
+            && pointer.is_some_and(|pos| !plate.contains(pos) && !anchor.contains(pos));
         if clicked_outside || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
             app.speed_menu = false;
         }

@@ -10,6 +10,42 @@ use eframe::egui::{
 
 use crate::ui::Palette;
 
+/// M3 ripple: a circle that grows from where the pointer went down and fades
+/// out. Compose calls it `Ripple`; the spec folds it into the press state layer.
+///
+/// Drawn after the widget so it tints the fill and the glyph alike, then the
+/// animation clock keeps repainting until it has faded out.
+pub fn ripple(ui: &Ui, resp: &Response, rect: Rect, color: Color32) {
+    const DURATION: f64 = 0.42;
+    let id = resp.id.with("ripple");
+    let now = ui.input(|i| i.time);
+    if resp.contains_pointer()
+        && ui.input(|i| i.pointer.any_pressed())
+        && let Some(pos) = ui.input(|i| i.pointer.interact_pos())
+    {
+        ui.ctx().data_mut(|d| d.insert_temp(id, (pos, now)));
+    }
+    let Some((origin, t0)) = ui.ctx().data(|d| d.get_temp::<(egui::Pos2, f64)>(id)) else {
+        return;
+    };
+    let t = ((now - t0) / DURATION) as f32;
+    if !(0.0..1.0).contains(&t) {
+        return;
+    }
+    // Grow past the farthest corner so the whole shape is covered by the end,
+    // while the alpha falls off faster than the radius grows.
+    let far = [rect.min, rect.max, pos2(rect.min.x, rect.max.y), pos2(rect.max.x, rect.min.y)]
+        .iter()
+        .map(|corner| corner.distance(origin))
+        .fold(0.0_f32, f32::max);
+    let eased = 1.0 - (1.0 - t).powi(2);
+    let alpha = (1.0 - t).powi(2) * 0.14;
+    ui.painter()
+        .with_clip_rect(rect)
+        .circle_filled(origin, far * eased, color.gamma_multiply(alpha));
+    ui.ctx().request_repaint();
+}
+
 /// Icon button: 40×40 round, state layer on hover, tonal when toggled on.
 pub fn icon_button(
     ui: &mut Ui,
@@ -49,6 +85,7 @@ pub fn icon_button(
         palette.on_surface_variant
     };
     glyph(&mut child, icon_size, fg);
+    ripple(ui, &response, rect, palette.on_surface);
     response
 }
 
@@ -107,6 +144,7 @@ pub fn pill_button(
     }
     ui.painter()
         .galley(pos2(x, cy - galley.size().y * 0.5), galley, text_color);
+    ripple(ui, &response, rect, state);
     response
 }
 
@@ -137,6 +175,7 @@ pub fn text_button(ui: &mut Ui, palette: &Palette, label: &str) -> Response {
         galley,
         palette.primary,
     );
+    ripple(ui, &response, rect, palette.primary);
     response
 }
 
@@ -166,6 +205,7 @@ pub fn chip(ui: &mut Ui, palette: &Palette, label: &str, selected: bool) -> Resp
     ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
     ui.painter()
         .galley(rect.center() - galley.size() * 0.5, galley, text);
+    ripple(ui, &response, rect, text);
     response
 }
 
@@ -281,6 +321,7 @@ pub fn chip_row(
         );
         ui.painter()
             .galley(item.center() - galley.size() * 0.5, galley, color);
+        ripple(ui, &response, *item, palette.on_secondary_container);
     }
     clicked
 }
@@ -471,6 +512,7 @@ pub fn switch(ui: &mut Ui, palette: &Palette, on: &mut bool) -> Response {
     };
     ui.painter()
         .circle_filled(pos2(cx, rect.center().y), knob_r, knob_color);
+    ripple(ui, &response, rect, if *on { palette.primary } else { palette.on_surface });
     response
 }
 
