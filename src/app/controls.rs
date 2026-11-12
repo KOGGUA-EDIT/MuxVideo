@@ -16,7 +16,7 @@ use crate::ui::Palette;
 /// Drawn after the widget so it tints the fill and the glyph alike, then the
 /// animation clock keeps repainting until it has faded out.
 pub fn ripple(ui: &Ui, resp: &Response, rect: Rect, color: Color32) {
-    const DURATION: f64 = 0.50;
+    const DURATION: f64 = 0.70;
     thread_local! {
         static RIPPLES: std::cell::RefCell<std::collections::HashMap<egui::Id, (egui::Pos2, f64)>> =
             std::cell::RefCell::new(std::collections::HashMap::new());
@@ -49,11 +49,14 @@ pub fn ripple(ui: &Ui, resp: &Response, rect: Rect, color: Color32) {
         .map(|corner| corner.distance(origin))
         .fold(0.0_f32, f32::max);
     let eased = 1.0 - (1.0 - t).powi(2);
-    let alpha = (1.0 - t).powi(2) * 0.20;
+    let alpha = (1.0 - t).powi(2) * 0.30;
     ui.painter()
         .with_clip_rect(rect)
         .circle_filled(origin, far * eased, color.gamma_multiply(alpha));
-    ui.ctx().request_repaint();
+    // `request_repaint` alone only yields a single follow-up frame; the shell
+    // idles between events, so a short animation compresses into one invisible
+    // step. Ask for a steady frame cadence until the ripple has faded out.
+    ui.ctx().request_repaint_after(std::time::Duration::from_millis(16));
 }
 
 /// Icon button: 40×40 round, state layer on hover, tonal when toggled on.
