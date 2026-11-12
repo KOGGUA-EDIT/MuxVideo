@@ -1068,9 +1068,9 @@ fn speed_menu(ui: &mut Ui, app: &mut MuxApp, p: &crate::ui::Palette, chip: Speed
     let item_h = 32.0;
     let w = SPEED_MENU_W;
     let h = n * item_h + (n - 1.0) * gap + pad * 2.0;
-    // The sheet tucks 8 px into the chip and is then covered by it, so its
-    // bottom corners never peek out around the pill.
-    let bottom = anchor.max.y - 8.0;
+    // The sheet tucks into the chip and is then covered by it, so its bottom
+    // edge never shows: square corners below, rounded corners on top.
+    let bottom = anchor.min.y + 8.0;
     let rect = Rect::from_min_size(pos2(anchor.max.x - w, bottom - h), vec2(w, h));
     // Fast-out pull: most of the travel happens in the first frames, then it
     // settles — reads as yanking a drawer open.
@@ -1086,62 +1086,71 @@ fn speed_menu(ui: &mut Ui, app: &mut MuxApp, p: &crate::ui::Palette, chip: Speed
     let clicked = ctx.input(|i| i.pointer.any_click());
     let speed_now = app.settings.speed;
     let mut chosen: Option<f64> = None;
-    // An `Area` puts the sheet on its own layer above every panel, which a bare
-    // `layer_painter` call does not guarantee.
-    egui::Area::new(egui::Id::new("speed-menu-area"))
-        .order(egui::Order::Foreground)
-        .fixed_pos(rect.min)
-        .interactable(false)
-        .show(&ctx, |ui| {
-            let painter = ui.painter().with_clip_rect(clip);
-            painter.rect_filled(plate, CornerRadius::same(16), p.surface_container_high);
-            for (i, speed) in SPEEDS.iter().enumerate() {
-                let item = Rect::from_min_size(
-                    pos2(plate.min.x + pad, plate.min.y + pad + i as f32 * (item_h + gap)),
-                    vec2(w - pad * 2.0, item_h),
-                );
-                let hovered = s > 0.5 && pointer.is_some_and(|pos| item.contains(pos));
-                if hovered {
-                    painter.rect_filled(
-                        item,
-                        CornerRadius::same(10),
-                        p.on_surface.gamma_multiply(0.08),
-                    );
-                }
-                let current = (speed_now - *speed).abs() < 0.001;
-                let col = if current { p.primary } else { p.on_surface };
-                painter.text(
-                    pos2(item.min.x + 12.0, item.center().y),
-                    egui::Align2::LEFT_CENTER,
-                    format!("{}×", trim_speed(*speed)),
-                    FontId::proportional(14.0),
-                    col,
-                );
-                if current {
-                    painter.circle_filled(pos2(item.max.x - 12.0, item.center().y), 3.0, p.primary);
-                }
-                if hovered && clicked {
-                    chosen = Some(*speed);
-                }
-            }
-            // Put the chip back on top: the sheet runs underneath the pill, so
-            // its rounded bottom edge is swallowed instead of peeking out.
-            painter.rect_filled(anchor, CornerRadius::same(8), chip.fill);
-            painter.text(
-                pos2(anchor.min.x + 12.0, anchor.center().y),
-                egui::Align2::LEFT_CENTER,
-                format!("{}×", trim_speed(speed_now)),
-                FontId::proportional(14.0),
-                chip.fg,
+    // A tooltip-layer painter sits above every panel and is not constrained by
+    // a widget rect the way an `Area` is — the sheet has to overhang the
+    // transport panel to be this tall.
+    let painter = ctx
+        .layer_painter(egui::LayerId::new(
+            egui::Order::Tooltip,
+            egui::Id::new("speed-menu"),
+        ))
+        .with_clip_rect(clip);
+    painter.rect_filled(
+        plate,
+        CornerRadius {
+            nw: 16,
+            ne: 16,
+            sw: 0,
+            se: 0,
+        },
+        p.surface_container_high,
+    );
+    for (i, speed) in SPEEDS.iter().enumerate() {
+        let item = Rect::from_min_size(
+            pos2(plate.min.x + pad, plate.min.y + pad + i as f32 * (item_h + gap)),
+            vec2(w - pad * 2.0, item_h),
+        );
+        let hovered = s > 0.5 && pointer.is_some_and(|pos| item.contains(pos));
+        if hovered {
+            painter.rect_filled(
+                item,
+                CornerRadius::same(10),
+                p.on_surface.gamma_multiply(0.08),
             );
-            let c = pos2(anchor.max.x - 16.0, anchor.center().y);
-            let ang = std::f32::consts::PI * t;
-            let (sy, co) = ang.sin_cos();
-            let pt = |dx: f32, dy: f32| pos2(c.x + dx * co - dy * sy, c.y + dx * sy + dy * co);
-            let stroke = egui::Stroke::new(1.5_f32, chip.fg);
-            painter.line_segment([pt(-4.5, 2.0), pt(0.0, -2.5)], stroke);
-            painter.line_segment([pt(0.0, -2.5), pt(4.5, 2.0)], stroke);
-        });
+        }
+        let current = (speed_now - *speed).abs() < 0.001;
+        let col = if current { p.primary } else { p.on_surface };
+        painter.text(
+            pos2(item.min.x + 12.0, item.center().y),
+            egui::Align2::LEFT_CENTER,
+            format!("{}×", trim_speed(*speed)),
+            FontId::proportional(14.0),
+            col,
+        );
+        if current {
+            painter.circle_filled(pos2(item.max.x - 12.0, item.center().y), 3.0, p.primary);
+        }
+        if hovered && clicked {
+            chosen = Some(*speed);
+        }
+    }
+    // Put the chip back on top: the sheet runs underneath the pill, so its
+    // rounded bottom edge is swallowed instead of peeking out.
+    painter.rect_filled(anchor, CornerRadius::same(8), chip.fill);
+    painter.text(
+        pos2(anchor.min.x + 12.0, anchor.center().y),
+        egui::Align2::LEFT_CENTER,
+        format!("{}×", trim_speed(speed_now)),
+        FontId::proportional(14.0),
+        chip.fg,
+    );
+    let c = pos2(anchor.max.x - 16.0, anchor.center().y);
+    let ang = std::f32::consts::PI * t;
+    let (sy, co) = ang.sin_cos();
+    let pt = |dx: f32, dy: f32| pos2(c.x + dx * co - dy * sy, c.y + dx * sy + dy * co);
+    let stroke = egui::Stroke::new(1.5_f32, chip.fg);
+    painter.line_segment([pt(-4.5, 2.0), pt(0.0, -2.5)], stroke);
+    painter.line_segment([pt(0.0, -2.5), pt(4.5, 2.0)], stroke);
 
     if let Some(speed) = chosen {
         app.settings.speed = speed;
