@@ -361,7 +361,11 @@ fn playlist_row(
     } else {
         p.on_surface
     };
-    let short = super::bars::truncate(name, 26);
+    // The chips dropped to the lower half of the row, so the name can use the
+    // full width; it is still fitted, never allowed to bleed under the chips.
+    let chips_left = rect.max.x - 98.0;
+    let _ = chips_left;
+    let name_w = (rect.max.x - 12.0 - (inner.min.x + 26.0)).max(40.0);
     ui.painter().text(
         pos2(inner.min.x, inner.min.y + 9.0),
         egui::Align2::LEFT_CENTER,
@@ -369,13 +373,10 @@ fn playlist_row(
         FontId::monospace(11.0),
         p.outline,
     );
-    ui.painter().text(
-        pos2(inner.min.x + 26.0, inner.min.y + 9.0),
-        egui::Align2::LEFT_CENTER,
-        short,
-        FontId::proportional(14.0),
-        name_color,
-    );
+    let name_galley = fitted_galley(ui, name, FontId::proportional(14.0), name_color, name_w);
+    let name_h = name_galley.size().y;
+    ui.painter()
+        .galley(pos2(inner.min.x + 26.0, inner.min.y + 9.0 - name_h * 0.5), name_galley, name_color);
     ui.painter().text(
         pos2(inner.min.x + 26.0, inner.min.y + 28.0),
         egui::Align2::LEFT_CENTER,
@@ -384,10 +385,11 @@ fn playlist_row(
         p.on_surface_variant,
     );
 
-    // Plane assignment chips.
+    // Plane assignment chips, nudged down so they sit under the name line.
     let chip_size = vec2(40.0, 24.0);
-    let a_rect = Rect::from_min_size(pos2(rect.max.x - 98.0, rect.center().y - 12.0), chip_size);
-    let b_rect = Rect::from_min_size(pos2(rect.max.x - 52.0, rect.center().y - 12.0), chip_size);
+    let chip_y = rect.max.y - 36.0;
+    let a_rect = Rect::from_min_size(pos2(rect.max.x - 98.0, chip_y), chip_size);
+    let b_rect = Rect::from_min_size(pos2(rect.max.x - 52.0, chip_y), chip_size);
     let listed = app.playlist_path(index);
     for (plane, chip_rect, label) in [(Target::A, a_rect, "A"), (Target::B, b_rect, "B")] {
         let id = ui.id().with(("pl-chip", index, label));
@@ -425,14 +427,48 @@ fn playlist_row(
     response
 }
 
+/// Lays text out to at most `max_w`, cutting it with an ellipsis when it does
+/// not fit. Character counting is not enough: CJK glyphs are twice as wide as
+/// latin ones, so a fixed cut either overflows or wastes half the row.
+fn fitted_galley(
+    ui: &Ui,
+    text: &str,
+    font: FontId,
+    color: Color32,
+    max_w: f32,
+) -> std::sync::Arc<egui::Galley> {
+    let painter = ui.painter();
+    let full = painter.layout_no_wrap(text.to_owned(), font.clone(), color);
+    if full.size().x <= max_w {
+        return full;
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let cut = |n: usize| {
+        let mut s: String = chars[..n].iter().collect();
+        s.push('…');
+        s
+    };
+    let mut lo = 0usize;
+    let mut hi = chars.len().saturating_sub(1);
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if painter.layout_no_wrap(cut(mid), font.clone(), color).size().x <= max_w {
+            lo = mid;
+        } else {
+            hi = mid.saturating_sub(1);
+        }
+    }
+    painter.layout_no_wrap(cut(lo), font, color)
+}
+
 /// Chip hit-testing for the row (returns the plane to load into).
 fn row_action(ui: &Ui, app: &MuxApp, row: Rect, index: usize) -> Option<Target> {
     let a_rect = Rect::from_min_size(
-        pos2(row.max.x - 98.0, row.center().y - 12.0),
+        pos2(row.max.x - 98.0, row.max.y - 36.0),
         vec2(40.0, 24.0),
     );
     let b_rect = Rect::from_min_size(
-        pos2(row.max.x - 52.0, row.center().y - 12.0),
+        pos2(row.max.x - 52.0, row.max.y - 36.0),
         vec2(40.0, 24.0),
     );
     if ui.ctx().input(|i| i.pointer.any_click())
