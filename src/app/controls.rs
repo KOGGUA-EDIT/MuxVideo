@@ -5,13 +5,12 @@
 //! MD3 sliders with a draggable thumb and cards with hover elevation.
 
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, FontId, Rect, Response, Sense, Stroke, StrokeKind, Ui,
-    Vec2, pos2, vec2,
+    self, Align2, Color32, CornerRadius, FontId, Rect, Response, Sense, Ui, Vec2, pos2, vec2,
 };
 
 use crate::ui::Palette;
 
-/// Icon button: 40×40 rounded square, tonal hover fill, animated.
+/// Icon button: 40×40 round, state layer on hover, tonal when toggled on.
 pub fn icon_button(
     ui: &mut Ui,
     palette: &Palette,
@@ -23,22 +22,21 @@ pub fn icon_button(
     let hover = ui
         .ctx()
         .animate_bool_with_time(response.id, response.hovered(), 0.12);
+    // M3 state layer: the on-surface colour at 8 % over the transparent button.
     let fill = if active {
         palette.secondary_container
     } else if hover > 0.01 {
-        palette
-            .surface_container_highest
-            .gamma_multiply(hover * 0.9)
+        palette.on_surface.gamma_multiply(hover * 0.08)
     } else {
         Color32::TRANSPARENT
     };
     if fill != Color32::TRANSPARENT {
         ui.painter()
-            .rect_filled(rect, CornerRadius::same((size * 0.3) as u8), fill);
+            .rect_filled(rect, CornerRadius::same((size * 0.5) as u8), fill);
     }
 
     // Paint the glyph centred in the button.
-    let icon_size = size * 0.52;
+    let icon_size = (size * 0.5).min(20.0);
     let icon_rect = Rect::from_center_size(rect.center(), Vec2::splat(icon_size));
     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(icon_rect).layout(
         egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
@@ -70,8 +68,9 @@ pub fn pill_button(
     let galley =
         ui.painter()
             .layout_no_wrap(label.to_owned(), FontId::proportional(14.0), text_color);
-    let icon_w = if icon.is_some() { 24.0 } else { 0.0 };
-    let pad_x = 18.0;
+    let icon_w = if icon.is_some() { 18.0 } else { 0.0 };
+    // M3 button: 40 dp tall, full pill, 24 px leading/trailing padding.
+    let pad_x = 24.0;
     let size = vec2(galley.size().x + pad_x * 2.0 + icon_w, 40.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let hover = ui
@@ -82,22 +81,29 @@ pub fn pill_button(
     } else {
         palette.secondary_container
     };
-    let fill = if response.hovered() {
-        base.gamma_multiply(1.0 + hover * 0.08)
+    // State layer (8 % of the on-colour) instead of lightening the container.
+    let state = if filled {
+        palette.on_primary
+    } else {
+        palette.on_secondary_container
+    };
+    let fill = if hover > 0.01 {
+        mix(base, state, hover * 0.08)
     } else {
         base
     };
-    ui.painter().rect_filled(rect, CornerRadius::same(20), fill);
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same((size.y * 0.5) as u8), fill);
 
     let mut x = rect.min.x + pad_x;
     let cy = rect.center().y;
     if let Some(icon_fn) = icon {
-        let icon_rect = Rect::from_center_size(pos2(x + 12.0, cy), Vec2::splat(20.0));
+        let icon_rect = Rect::from_center_size(pos2(x + 9.0, cy), Vec2::splat(18.0));
         let mut child = ui.new_child(egui::UiBuilder::new().max_rect(icon_rect).layout(
             egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
         ));
-        icon_fn(&mut child, 20.0, text_color);
-        x += 24.0;
+        icon_fn(&mut child, 18.0, text_color);
+        x += 18.0 + 8.0;
     }
     ui.painter()
         .galley(pos2(x, cy - galley.size().y * 0.5), galley, text_color);
@@ -111,7 +117,7 @@ pub fn text_button(ui: &mut Ui, palette: &Palette, label: &str) -> Response {
         FontId::proportional(14.0),
         palette.primary,
     );
-    let size = vec2(galley.size().x + 28.0, 40.0);
+    let size = vec2(galley.size().x + 24.0, 40.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let hover = ui
         .ctx()
@@ -120,7 +126,7 @@ pub fn text_button(ui: &mut Ui, palette: &Palette, label: &str) -> Response {
         ui.painter().rect_filled(
             rect,
             CornerRadius::same(20),
-            palette.primary.gamma_multiply(0.10 * hover),
+            palette.primary.gamma_multiply(0.08 * hover),
         );
     }
     ui.painter().galley(
@@ -134,14 +140,15 @@ pub fn text_button(ui: &mut Ui, palette: &Palette, label: &str) -> Response {
     response
 }
 
-/// Segmented mode chip: filled when selected.
+/// Segmented mode chip: tonal when selected, state layer when hovered.
 pub fn chip(ui: &mut Ui, palette: &Palette, label: &str, selected: bool) -> Response {
     let galley = ui.painter().layout_no_wrap(
         label.to_owned(),
-        FontId::proportional(13.5),
+        FontId::proportional(14.0),
         palette.on_surface,
     );
-    let size = vec2(galley.size().x + 28.0, 34.0);
+    // M3 chip: 32 dp tall, 8 dp corner, no outline (tonal fill does the work).
+    let size = vec2(galley.size().x + 28.0, 32.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let hover = ui
         .ctx()
@@ -150,23 +157,13 @@ pub fn chip(ui: &mut Ui, palette: &Palette, label: &str, selected: bool) -> Resp
         (palette.secondary_container, palette.on_secondary_container)
     } else if hover > 0.01 {
         (
-            palette
-                .surface_container_high
-                .gamma_multiply(0.6 + hover * 0.4),
-            palette.on_surface_variant,
+            mix(palette.surface_container_high, palette.on_surface, hover * 0.08),
+            palette.on_surface,
         )
     } else {
-        (palette.surface_container_low, palette.on_surface_variant)
+        (palette.surface_container_high, palette.on_surface_variant)
     };
-    ui.painter().rect_filled(rect, CornerRadius::same(10), fill);
-    if selected {
-        ui.painter().rect_stroke(
-            rect,
-            CornerRadius::same(10),
-            Stroke::new(1.0_f32, palette.outline_variant),
-            StrokeKind::Inside,
-        );
-    }
+    ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
     ui.painter()
         .galley(rect.center() - galley.size() * 0.5, galley, text);
     response
@@ -199,9 +196,9 @@ pub fn chip_row(
     labels: &[&str],
     selected: usize,
 ) -> Option<usize> {
-    const HEIGHT: f32 = 34.0;
-    const GAP: f32 = 6.0;
-    const PAD_X: f32 = 14.0;
+    const HEIGHT: f32 = 40.0;
+    const GAP: f32 = 0.0;
+    const PAD_X: f32 = 16.0;
     if labels.is_empty() {
         return None;
     }
@@ -211,7 +208,7 @@ pub fn chip_row(
         .map(|label| {
             ui.painter().layout_no_wrap(
                 (*label).to_owned(),
-                FontId::proportional(13.5),
+                FontId::proportional(14.0),
                 palette.on_surface,
             )
         })
@@ -254,29 +251,21 @@ pub fn chip_row(
         x += *width + GAP;
     }
 
-    // Group track, then the moving pill, then labels.
+    // Group track (single rounded container), then the moving pill, then labels.
+    let pill_radius = CornerRadius::same((HEIGHT * 0.5) as u8);
     ui.painter()
-        .rect_filled(rect, CornerRadius::same(10), palette.surface_container_low);
+        .rect_filled(rect, pill_radius, palette.surface_container);
     let first = pos.floor().clamp(0.0, labels.len() as f32 - 1.0);
     let second = (first + 1.0).min(labels.len() as f32 - 1.0);
     let blend = pos - first;
     let a = item_rects[first as usize];
     let b = item_rects[second as usize];
     let highlight = Rect::from_min_max(
-        pos2(a.min.x + (b.min.x - a.min.x) * blend, a.min.y),
-        pos2(a.max.x + (b.max.x - a.max.x) * blend, a.max.y),
+        pos2(a.min.x + (b.min.x - a.min.x) * blend, a.min.y + 4.0),
+        pos2(a.max.x + (b.max.x - a.max.x) * blend, a.max.y - 4.0),
     );
-    ui.painter().rect_filled(
-        highlight,
-        CornerRadius::same(10),
-        palette.secondary_container,
-    );
-    ui.painter().rect_stroke(
-        highlight,
-        CornerRadius::same(10),
-        Stroke::new(1.0_f32, palette.outline_variant),
-        StrokeKind::Inside,
-    );
+    ui.painter()
+        .rect_filled(highlight, pill_radius, palette.secondary_container);
 
     let mut clicked = None;
     for (index, (item, galley)) in item_rects.iter().zip(galleys).enumerate() {
@@ -426,7 +415,7 @@ pub fn card(_ui: &mut Ui, fill: Color32, radius: u8) -> egui::Frame {
 pub fn label_small(ui: &mut Ui, palette: &Palette, text: &str) -> Response {
     ui.label(
         egui::RichText::new(text)
-            .size(11.5)
+            .size(11.0)
             .color(palette.on_surface_variant),
     )
 }
@@ -436,8 +425,7 @@ pub fn label_small(ui: &mut Ui, palette: &Palette, text: &str) -> Response {
 pub fn title_large(ui: &mut Ui, palette: &Palette, text: &str) -> Response {
     ui.label(
         egui::RichText::new(text)
-            .size(20.0)
-            .strong()
+            .size(22.0)
             .color(palette.on_surface),
     )
 }
@@ -472,14 +460,6 @@ pub fn switch(ui: &mut Ui, palette: &Palette, on: &mut bool) -> Response {
     };
     ui.painter()
         .rect_filled(track, CornerRadius::same(13), track_fill);
-    if !*on {
-        ui.painter().rect_stroke(
-            track,
-            CornerRadius::same(13),
-            Stroke::new(1.2_f32, palette.outline),
-            StrokeKind::Inside,
-        );
-    }
     let travel = track.width() - 18.0;
     let cx = track.min.x + 9.0 + travel * t;
     let knob_r = 6.0 + 3.0 * t;
@@ -493,12 +473,12 @@ pub fn switch(ui: &mut Ui, palette: &Palette, on: &mut bool) -> Response {
     response
 }
 
-/// Rounded surface, used for the settings grouped cards.
+/// Rounded surface, used for the settings grouped cards (M3 card: 12 dp).
 pub fn surface_card(ui: &mut Ui, palette: &Palette, add: impl FnOnce(&mut Ui)) -> egui::Response {
     egui::Frame::NONE
         .fill(palette.surface_container_low)
-        .corner_radius(CornerRadius::same(20))
-        .inner_margin(egui::Margin::symmetric(20, 16))
+        .corner_radius(CornerRadius::same(12))
+        .inner_margin(egui::Margin::same(16))
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
             add(ui);

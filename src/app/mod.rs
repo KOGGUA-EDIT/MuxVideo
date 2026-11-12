@@ -120,16 +120,36 @@ pub struct MuxApp {
 }
 
 impl MuxApp {
-    pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        crate::fonts::install(&cc.egui_ctx);
-        let settings = Settings::load();
+    pub fn new(cc: &eframe::CreationContext<'_>, boot: crate::boot::Boot) -> Self {
+        crate::app::diag::mark("app::new enter");
+
+        // The boot worker has been running while the window and GL context were
+        // created; by now it is normally done and the join costs nothing.
+        let (settings, face, lib, boot_error) = match boot.join() {
+            Some(parts) => {
+                let boot_error = parts.lib.as_ref().err().cloned();
+                (parts.settings, parts.face, parts.lib.ok(), boot_error)
+            }
+            // Worker never reported (spawn failed): do the same work inline.
+            None => {
+                let settings = Settings::load();
+                let face = crate::fonts::load_face();
+                match LibMpv::load() {
+                    Ok(lib) => (settings, face, Some(lib), None),
+                    Err(err) => (settings, face, None, Some(format!("{err:#}"))),
+                }
+            }
+        };
+        crate::app::diag::mark("boot parts joined");
+
+        if let Some(face) = face {
+            crate::fonts::install(&cc.egui_ctx, face);
+        }
+        crate::app::diag::mark("fonts installed");
+
         let palette = Palette::from_seed(settings.seed_color(), settings.scheme());
         crate::ui::install_style(&cc.egui_ctx, &palette);
-
-        let (lib, boot_error) = match LibMpv::load() {
-            Ok(lib) => (Some(lib), None),
-            Err(err) => (None, Some(format!("{err:#}"))),
-        };
+        crate::app::diag::mark("style installed");
 
         let playlist: Vec<PlayEntry> = settings
             .recent
@@ -142,8 +162,6 @@ impl MuxApp {
                 Some(PlayEntry::new(path.to_path_buf()))
             })
             .collect();
-
-        let palette_scheme = settings.dark;
 
         let mut app = Self {
             palette,
@@ -192,9 +210,7 @@ impl MuxApp {
             env!("CARGO_PKG_VERSION"),
             std::env::current_exe().ok()
         );
-        app.palette = Palette::from_seed(app.settings.seed_color(), app.settings.scheme());
-        crate::ui::install_style(&cc.egui_ctx, &app.palette);
-        let _ = palette_scheme;
+        crate::app::diag::mark("app built");
 
         // Files given on the command line: first goes to A, the rest queue for B.
         let mut target = Target::Auto;
@@ -937,6 +953,9 @@ impl MuxApp {
             self.settings.wipe,
             blink_b,
         );
+        if self.frame_no == 1 {
+            crate::app::diag::mark("f1: layout synced");
+        }
         self.media.sync_playback(self.settings.mode);
         self.stage_reported = false;
         self.sync_fit(ppp);
@@ -1083,6 +1102,9 @@ const MIN_WINDOW_H: i32 = 400;
 impl eframe::App for MuxApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.frame_no += 1;
+        if self.frame_no <= 3 || self.frame_no == 10 {
+            crate::app::diag::mark(&format!("frame {}", self.frame_no));
+        }
         self.perf_tick();
         if !self.immersive {
             self.resize_borders(ctx);
@@ -1093,6 +1115,9 @@ impl eframe::App for MuxApp {
         let pending = std::mem::take(&mut self.pending);
         for (path, target) in pending {
             self.open_path(path, target);
+        }
+        if self.frame_no == 1 {
+            crate::app::diag::mark("f1: preamble");
         }
 
         // Window geometry, only when it changes: the fastest way to see whether
@@ -1145,8 +1170,17 @@ impl eframe::App for MuxApp {
         if !ctx.wants_keyboard_input() {
             self.handle_keys(ctx);
         }
+        if self.frame_no == 1 {
+            crate::app::diag::mark("f1: keys handled");
+        }
         input::pump(self, ctx);
+        if self.frame_no == 1 {
+            crate::app::diag::mark("f1: input pumped raw");
+        }
         self.pump_events(ctx);
+        if self.frame_no == 1 {
+            crate::app::diag::mark("f1: input pumped");
+        }
 
         let palette = self.palette.clone();
         let surface = palette.surface;
@@ -1217,6 +1251,9 @@ impl eframe::App for MuxApp {
                 )
                 .show(ctx, |ui| panels::playlist(ui, self));
         }
+        if self.frame_no == 1 {
+            crate::app::diag::mark("f1: side panels");
+        }
 
         egui::CentralPanel::default()
             .frame(
@@ -1229,7 +1266,13 @@ impl eframe::App for MuxApp {
                 _ => bars::stage_area(ui, self),
             });
 
+        if self.frame_no == 1 {
+            crate::app::diag::mark("f1: central panel");
+        }
         self.sync_stage(ctx);
+        if self.frame_no == 1 {
+            crate::app::diag::mark("f1: stage synced");
+        }
         self.toast_layer(ctx);
         self.maybe_save();
 
@@ -1243,6 +1286,13 @@ impl eframe::App for MuxApp {
         } else {
             Duration::from_millis(100)
         });
+        if self.frame_no <= 3 {
+            crate::app::diag::mark(&format!("frame {} laid out", self.frame_no));
+        }
+        // One write for the whole startup timeline once the first frames painted.
+        if self.frame_no == 2 {
+            crate::app::diag::flush_boot();
+        }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {

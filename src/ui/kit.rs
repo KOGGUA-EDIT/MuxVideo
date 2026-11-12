@@ -55,21 +55,25 @@ fn apply_style(style: &mut egui::Style, palette: &Palette) {
 
 /// The M3 type scale as egui text styles.
 ///
-/// `small 11`, `body 14`, `button 14`, `heading 28`, `monospace 13`, plus named
-/// styles used by [`crate::ui::widgets`]: `display 36`, `headline 28`,
-/// `title 22`, `title_small 16`, `body 14`, `label 12`, `label_small 11`.
+/// Only sizes that exist on the Material 3 scale are used: 11, 12, 14, 16, 22,
+/// 24, 28, 32. Anything between them is off-scale and gets snapped by hand in
+/// the shell (`12.0` label-medium, `14.0` body-medium/label-large, `16.0`
+/// title-medium/body-large, `22.0` title-large, `24.0` headline-small).
 fn text_styles() -> BTreeMap<TextStyle, FontId> {
     BTreeMap::from([
         (TextStyle::Small, FontId::proportional(11.0)),
         (TextStyle::Body, FontId::proportional(14.0)),
         (TextStyle::Button, FontId::proportional(14.0)),
-        (TextStyle::Heading, FontId::proportional(28.0)),
+        (TextStyle::Heading, FontId::proportional(24.0)),
         (TextStyle::Monospace, FontId::monospace(13.0)),
-        (style_name("display"), FontId::proportional(36.0)),
+        (style_name("display"), FontId::proportional(32.0)),
         (style_name("headline"), FontId::proportional(28.0)),
+        (style_name("headline_small"), FontId::proportional(24.0)),
         (style_name("title"), FontId::proportional(22.0)),
         (style_name("title_small"), FontId::proportional(16.0)),
+        (style_name("body_large"), FontId::proportional(16.0)),
         (style_name("body"), FontId::proportional(14.0)),
+        (style_name("label_large"), FontId::proportional(14.0)),
         (style_name("label"), FontId::proportional(12.0)),
         (style_name("label_small"), FontId::proportional(11.0)),
     ])
@@ -84,11 +88,12 @@ fn spacing() -> egui::Spacing {
     scroll.foreground_color = false;
 
     egui::Spacing {
-        // 8 px horizontal rhythm; the shell asks for at most 6 px vertical.
-        item_spacing: Vec2::new(8.0, 6.0),
+        // 4 dp grid: 8 px both ways keeps rows on the same rhythm.
+        item_spacing: Vec2::new(8.0, 8.0),
         window_margin: Margin::same(24),
         menu_margin: Margin::same(8),
-        button_padding: Vec2::new(20.0, 10.0),
+        // 40 dp button with a 24 px side padding (M3 filled button anatomy).
+        button_padding: Vec2::new(24.0, 10.0),
         interact_size: Vec2::new(44.0, 44.0),
         slider_width: 220.0,
         slider_rail_height: 4.0,
@@ -131,9 +136,10 @@ fn visuals(palette: &Palette) -> Visuals {
     };
 
     visuals.window_fill = palette.surface_container_high;
-    visuals.window_stroke = Stroke::new(1.0_f32, palette.outline_variant);
+    // M3 separates with surface tones, not outlines: no window/panel strokes.
+    visuals.window_stroke = Stroke::NONE;
     visuals.window_corner_radius = CornerRadius::same(28);
-    visuals.menu_corner_radius = CornerRadius::same(12);
+    visuals.menu_corner_radius = CornerRadius::same(4);
     visuals.window_shadow = Shadow {
         offset: [0, 6],
         blur: 24,
@@ -161,14 +167,17 @@ fn visuals(palette: &Palette) -> Visuals {
 }
 
 fn widget_visuals(palette: &Palette) -> Widgets {
-    let radius = CornerRadius::same(20);
+    // M3 shape scale: 4 (field/menu) and 8 (chip/button containers) are the only
+    // radii this app needs from the style; bigger shapes are per-component and
+    // painted by the app's own widget kit.
+    let radius = CornerRadius::same(8);
     let quiet = Stroke::NONE;
 
     Widgets {
         noninteractive: WidgetVisuals {
             bg_fill: palette.surface,
             weak_bg_fill: palette.surface,
-            bg_stroke: Stroke::new(1.0_f32, palette.outline_variant),
+            bg_stroke: quiet,
             corner_radius: CornerRadius::ZERO,
             fg_stroke: Stroke::new(1.0_f32, palette.on_surface),
             expansion: 0.0,
@@ -235,7 +244,7 @@ mod tests {
         assert_eq!(style.visuals.panel_fill, palette.surface);
         assert_eq!(style.visuals.override_text_color, Some(palette.on_surface));
         assert_eq!(style.animation_time, 0.15);
-        assert_eq!(style.spacing.item_spacing, Vec2::new(8.0, 6.0));
+        assert_eq!(style.spacing.item_spacing, Vec2::new(8.0, 8.0));
         assert_eq!(style.spacing.slider_rail_height, 4.0);
         assert_eq!(style.spacing.scroll.bar_width, 8.0);
         assert_eq!(

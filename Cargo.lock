@@ -1510,7 +1510,7 @@ dependencies = [
 
 [[package]]
 name = "muxvideo"
-version = "0.1.44"
+version = "0.1.45"
 dependencies = [
  "anyhow",
  "eframe",
@@ -2421,7 +2421,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.6",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

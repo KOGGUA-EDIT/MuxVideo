@@ -1,6 +1,6 @@
 [package]
 name = "muxvideo"
-version = "0.1.44"
+version = "0.1.45"
 edition = "2024"
 rust-version = "1.88"
 description = "MuxVideo — a Material You video comparison and viewer built on mpv"
@@ -47,6 +47,7 @@ windows-sys = { version = "0.61", features = [
     "Win32_Graphics_Dwm",
     "Win32_System_LibraryLoader",
     "Win32_System_SystemInformation",
+    "Win32_System_Threading",
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_WindowsAndMessaging",

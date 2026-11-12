@@ -73,7 +73,7 @@ pub(super) fn playlist(ui: &mut Ui, app: &mut MuxApp) {
                 ui.vertical_centered(|ui| {
                     ui.label(
                         egui::RichText::new(app.t("还没有视频", "No videos yet"))
-                            .size(13.0)
+                            .size(14.0)
                             .color(p.on_surface_variant),
                     );
                     ui.add_space(4.0);
@@ -128,7 +128,7 @@ pub(super) fn playlist(ui: &mut Ui, app: &mut MuxApp) {
             "双击载入 A 面 · 右键移出列表",
             "Double-click to load into A · right-click to remove",
         ),
-        FontId::proportional(10.5),
+        FontId::proportional(11.0),
         p.outline,
     );
 
@@ -156,7 +156,7 @@ fn media_info_panel(ui: &mut Ui, app: &MuxApp, rect: Rect) {
     };
 
     ui.painter()
-        .rect_filled(rect, CornerRadius::same(16), p.surface_container_low);
+        .rect_filled(rect, CornerRadius::same(12), p.surface_container_low);
     let inner = rect.shrink2(vec2(14.0, 12.0));
 
     let mut y = inner.min.y;
@@ -164,7 +164,7 @@ fn media_info_panel(ui: &mut Ui, app: &MuxApp, rect: Rect) {
         pos2(inner.min.x, y + 8.0),
         egui::Align2::LEFT_CENTER,
         app.t("媒体信息", "Media info"),
-        FontId::proportional(13.0),
+        FontId::proportional(14.0),
         p.on_surface,
     );
     // Which plane holds this file, remembered as an index so the label can be
@@ -184,7 +184,7 @@ fn media_info_panel(ui: &mut Ui, app: &MuxApp, rect: Rect) {
             Some(_) => app.t("B 面", "B side"),
             None => app.t("未载入", "Empty"),
         },
-        FontId::proportional(10.5),
+        FontId::proportional(11.0),
         if plane.is_some() {
             p.primary
         } else {
@@ -317,7 +317,7 @@ fn media_info_panel(ui: &mut Ui, app: &MuxApp, rect: Rect) {
             pos2(inner.min.x, inner.max.y - 6.0),
             egui::Align2::LEFT_CENTER,
             super::bars::truncate(&entry.path.to_string_lossy(), 34),
-            FontId::proportional(10.0),
+            FontId::proportional(11.0),
             p.outline,
         );
     }
@@ -339,15 +339,19 @@ fn playlist_row(
         .ctx()
         .animate_bool_with_time(response.id, response.hovered(), 0.1);
 
-    let fill = if selected {
-        p.secondary_container
-    } else if hover > 0.0 {
-        p.surface_container.gamma_multiply(0.6 + hover * 0.4)
+    // M3 list item: flat until interactive. Hover is an 8 % state layer of the
+    // on-surface colour, selection is the secondary container — no idle cards.
+    let tint = if selected {
+        Some(p.secondary_container)
+    } else if hover > 0.01 {
+        Some(p.on_surface.gamma_multiply(hover * 0.08))
     } else {
-        p.surface_container_low
+        None
     };
-    ui.painter()
-        .rect_filled(rect.shrink2(vec2(2.0, 1.0)), CornerRadius::same(16), fill);
+    if let Some(fill) = tint {
+        ui.painter()
+            .rect_filled(rect.shrink2(vec2(2.0, 1.0)), CornerRadius::same(8), fill);
+    }
 
     let inner = rect.shrink2(vec2(10.0, 6.0));
     let name_color = if selected {
@@ -360,21 +364,21 @@ fn playlist_row(
         pos2(inner.min.x + 2.0, inner.min.y + 9.0),
         egui::Align2::LEFT_CENTER,
         format!("{:02}", index + 1),
-        FontId::monospace(10.5),
+        FontId::monospace(11.0),
         p.outline,
     );
     ui.painter().text(
         pos2(inner.min.x + 28.0, inner.min.y + 9.0),
         egui::Align2::LEFT_CENTER,
         short,
-        FontId::proportional(12.5),
+        FontId::proportional(14.0),
         name_color,
     );
     ui.painter().text(
         pos2(inner.min.x + 28.0, inner.min.y + 28.0),
         egui::Align2::LEFT_CENTER,
         format_size(size),
-        FontId::proportional(10.5),
+        FontId::proportional(11.0),
         p.on_surface_variant,
     );
 
@@ -403,7 +407,7 @@ fn playlist_row(
             chip_rect.center(),
             egui::Align2::CENTER_CENTER,
             label,
-            FontId::proportional(11.5),
+            FontId::proportional(12.0),
             if active {
                 p.on_primary
             } else {
@@ -463,7 +467,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                 "{} %APPDATA%\\MuxVideo\\muxvideo.settings.json",
                 app.t("以下设置会自动保存到", "Saved automatically to")
             ))
-            .size(11.5)
+            .size(12.0)
             .color(p.on_surface_variant),
         );
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
@@ -487,7 +491,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(app.t("语言", "Language"))
-                            .size(12.5)
+                            .size(14.0)
                             .color(p.on_surface_variant),
                     );
                     ui.add_space(12.0);
@@ -504,7 +508,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(app.t("配色", "Colour scheme"))
-                            .size(12.5)
+                            .size(14.0)
                             .color(p.on_surface_variant),
                     );
                     ui.add_space(12.0);
@@ -521,7 +525,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                 ui.add_space(12.0);
                 ui.label(
                     egui::RichText::new(app.t("主题色", "Seed colour"))
-                        .size(12.5)
+                        .size(14.0)
                         .color(p.on_surface_variant),
                 );
                 ui.add_space(6.0);
@@ -582,7 +586,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                         ui.add_space(10.0);
                         ui.label(
                             egui::RichText::new(mode.about(app.settings.lang))
-                                .size(11.5)
+                                .size(12.0)
                                 .color(p.on_surface_variant),
                         );
                     });
@@ -598,7 +602,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(app.t("硬件解码", "Hardware decoding"))
-                            .size(12.5)
+                            .size(14.0)
                             .color(p.on_surface_variant),
                     );
                     ui.add_space(14.0);
@@ -615,7 +619,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                     }
                     ui.label(
                         egui::RichText::new(app.t("下次载入生效", "applies on next load"))
-                            .size(10.0)
+                            .size(11.0)
                             .color(p.outline),
                     );
                 });
@@ -623,7 +627,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(app.t("循环当前文件", "Loop current file"))
-                            .size(12.5)
+                            .size(14.0)
                             .color(p.on_surface_variant),
                     );
                     ui.add_space(14.0);
@@ -635,7 +639,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                     ui.add_space(24.0);
                     ui.label(
                         egui::RichText::new(app.t("显示播放列表", "Show playlist"))
-                            .size(12.5)
+                            .size(14.0)
                             .color(p.on_surface_variant),
                     );
                     ui.add_space(14.0);
@@ -649,7 +653,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(app.t("默认音量", "Default volume"))
-                            .size(12.5)
+                            .size(14.0)
                             .color(p.on_surface_variant),
                     );
                     ui.add_space(14.0);
@@ -660,7 +664,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                     }
                     ui.label(
                         egui::RichText::new(format!("{:.0}%", app.settings.volume))
-                            .size(11.5)
+                            .size(12.0)
                             .monospace()
                             .color(p.on_surface_variant),
                     );
@@ -669,7 +673,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                 ui.horizontal(|ui| {
                     ui.label(
                         egui::RichText::new(app.t("擦洗灵敏度", "Scrub sensitivity"))
-                            .size(12.5)
+                            .size(14.0)
                             .color(p.on_surface_variant),
                     );
                     ui.add_space(14.0);
@@ -693,7 +697,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
                             app.settings.scrub_ppf,
                             app.t("px / 帧（越小越跟手）", "px per frame (smaller = closer)")
                         ))
-                        .size(11.5)
+                        .size(12.0)
                         .monospace()
                         .color(p.on_surface_variant),
                     );
@@ -823,7 +827,7 @@ pub(super) fn settings(ui: &mut Ui, app: &mut MuxApp) {
 fn section_title(ui: &mut Ui, p: &crate::ui::Palette, text: &str) {
     ui.label(
         egui::RichText::new(text)
-            .size(15.0)
+            .size(16.0)
             .strong()
             .color(p.on_surface),
     );
@@ -852,7 +856,7 @@ fn palette_strip(ui: &mut Ui, p: &crate::ui::Palette) {
                 pos2(rect.min.x + 8.0, rect.center().y),
                 egui::Align2::LEFT_CENTER,
                 name,
-                FontId::proportional(10.5),
+                FontId::proportional(11.0),
                 fg,
             );
             resp.on_hover_text(format!("{name}  {}", super::state::format_hex(color)));

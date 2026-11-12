@@ -27,10 +27,12 @@ use windows_sys::Win32::Graphics::Gdi::{
     SetWindowRgn, ValidateRect,
 };
 use windows_sys::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows_sys::Win32::System::Threading::GetCurrentThreadId;
 use windows_sys::Win32::UI::Input::KeyboardAndMouse::{GetAsyncKeyState, VK_LBUTTON};
 use windows_sys::Win32::UI::WindowsAndMessaging::{
     CS_DBLCLKS, CS_HREDRAW, CS_VREDRAW, CallWindowProcW, CreateWindowExW, DefWindowProcW,
-    DestroyWindow, EnumChildWindows, EnumWindows, GWLP_WNDPROC, GetClassNameW, GetClientRect,
+    DestroyWindow, EnumChildWindows, EnumThreadWindows, EnumWindows, GWLP_WNDPROC, GetClassNameW,
+    GetClientRect,
     GetCursorPos, GetForegroundWindow, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
     GetWindowThreadProcessId, HMENU, HWND_TOP, IDC_ARROW, IsWindow, LoadCursorW, MA_NOACTIVATE,
     RegisterClassW, SW_HIDE, SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
@@ -324,6 +326,11 @@ pub fn screen_to_client(hwnd: i64, x: i32, y: i32) -> Option<(i32, i32)> {
 ///
 /// Enumerating only this process' windows keeps the lookup from matching a
 /// foreign application that happens to use the same title.
+///
+/// The scan starts with this thread's own windows: eframe creates the toplevel
+/// on the thread that runs the UI, so that is a two-window walk instead of a
+/// system-wide `EnumWindows`, which can block for hundreds of milliseconds when
+/// some unrelated application is not pumping messages.
 pub fn find_window_by_title(title: &str) -> Option<i64> {
     let mut search = Search {
         process_id: current_process_id(),
@@ -332,8 +339,16 @@ pub fn find_window_by_title(title: &str) -> Option<i64> {
     };
 
     let context = std::ptr::from_mut(&mut search).cast::<c_void>() as LPARAM;
-    // SAFETY: EnumWindows calls the callback synchronously and `search` outlives
-    // the call; the callback treats the pointer as a `Search<'_>`.
+    // SAFETY: both enumerations call the callback synchronously and `search`
+    // outlives the calls; the callback treats the pointer as a `Search<'_>`.
+    unsafe {
+        EnumThreadWindows(GetCurrentThreadId(), Some(enum_window), context);
+    }
+    if search.found.is_some() {
+        return search.found;
+    }
+    // Fall back for the rare case where the window lives on another thread of
+    // this process (a second viewport, or a helper-created window).
     unsafe {
         EnumWindows(Some(enum_window), context);
     }

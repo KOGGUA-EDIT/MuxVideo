@@ -261,6 +261,10 @@ impl Default for Media {
 impl Media {
     /// Locates the toplevel and lazily creates the stage container + planes.
     fn ensure_native(&mut self) -> bool {
+        let t = std::env::var_os("MUXVIDEO_TRACE_STAGE").is_some();
+        if t {
+            crate::app::diag::mark("stage: enter");
+        }
         if self.container.is_none() {
             let Some(parent) = find_window_by_title(WINDOW_TITLE) else {
                 crate::diag!("[stage] ensure_native: no toplevel window yet");
@@ -278,9 +282,15 @@ impl Media {
                 crate::diag!("[stage] ensure_native: container has no hwnd");
                 return false;
             }
+            if t {
+                crate::app::diag::mark("stage: container ready");
+            }
             let ok = [Plane::A, Plane::B]
                 .into_iter()
                 .all(|plane| self.surface_mut(plane).ensure(stage, plane).is_ok());
+            if t {
+                crate::app::diag::mark("stage: planes ready");
+            }
             self.grip.round = 0; // shaped by `set_grip_region`, not a plain pill
             let grip_ok = ChildWindow::create_grip(stage, 0x4D56_0005, "muxvideo-grip")
                 .map(|win| {
@@ -289,6 +299,9 @@ impl Media {
                 })
                 .is_ok();
             self.planes_ready = ok && grip_ok;
+            if t {
+                crate::app::diag::mark("stage: grip ready");
+            }
         }
         self.planes_ready
     }

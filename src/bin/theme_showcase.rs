@@ -76,7 +76,9 @@ impl Showcase {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
         // Fonts first: install_style sizes text styles, and the CJK fallback
         // must exist before any label is laid out.
-        muxvideo::fonts::install(&cc.egui_ctx);
+        if let Some(face) = muxvideo::fonts::load_face() {
+            muxvideo::fonts::install(&cc.egui_ctx, face);
+        }
         let palette = Palette::from_seed(SEEDS[0], Scheme::Dark);
         install_style(&cc.egui_ctx, &palette);
         Self {

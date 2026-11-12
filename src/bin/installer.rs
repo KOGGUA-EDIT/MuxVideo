@@ -78,7 +78,9 @@ struct Installer {
 
 impl Installer {
     fn new(cc: &eframe::CreationContext<'_>) -> Self {
-        muxvideo::fonts::install(&cc.egui_ctx);
+        if let Some(face) = muxvideo::fonts::load_face() {
+            muxvideo::fonts::install(&cc.egui_ctx, face);
+        }
         let palette = Palette::from_seed(Color32::from_rgb(0xD0, 0xBC, 0xFF), Scheme::Dark);
         install_style(&cc.egui_ctx, &palette);
         let brand = muxvideo::app::icon::brand_texture(&cc.egui_ctx);

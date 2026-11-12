@@ -1,8 +1,8 @@
 //! Chrome drawing: title bar, navigation rail, compare bar, stage and transport.
 
 use eframe::egui::{
-    self, Align, Align2, Color32, CornerRadius, FontId, Layout, Rect, Sense, Stroke, StrokeKind,
-    Ui, UiBuilder, Vec2, pos2, vec2,
+    self, Align, Align2, Color32, CornerRadius, FontId, Layout, Rect, Sense, Ui, UiBuilder, Vec2,
+    pos2, vec2,
 };
 
 use super::controls::{self, icon_button};
@@ -42,8 +42,9 @@ fn file_badge(ui: &mut Ui, app: &mut MuxApp, plane: Target) {
     };
     let galley = ui
         .painter()
-        .layout_no_wrap(name.clone(), FontId::proportional(12.0), text_color);
-    let size = vec2(galley.size().x + 44.0, 26.0);
+        .layout_no_wrap(name.clone(), FontId::proportional(14.0), text_color);
+    // Assist chip: 32 dp tall, 8 dp corner, tonal fill.
+    let size = vec2(galley.size().x + 52.0, 32.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let hover = ui
         .ctx()
@@ -62,10 +63,10 @@ fn file_badge(ui: &mut Ui, app: &mut MuxApp, plane: Target) {
             fill
         },
     );
-    let tag_rect = Rect::from_min_size(rect.min + vec2(6.0, 5.0), vec2(18.0, 16.0));
+    let tag_rect = Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2(20.0, 20.0));
     ui.painter().rect_filled(
         tag_rect,
-        CornerRadius::same(5),
+        CornerRadius::same(4),
         if path.is_some() {
             tint
         } else {
@@ -76,7 +77,7 @@ fn file_badge(ui: &mut Ui, app: &mut MuxApp, plane: Target) {
         tag_rect.center(),
         Align2::CENTER_CENTER,
         label,
-        FontId::proportional(10.5),
+        FontId::proportional(11.0),
         if path.is_some() {
             p.on_primary_container
         } else {
@@ -84,7 +85,7 @@ fn file_badge(ui: &mut Ui, app: &mut MuxApp, plane: Target) {
         },
     );
     ui.painter().galley(
-        pos2(rect.min.x + 30.0, rect.center().y - galley.size().y * 0.5),
+        pos2(rect.min.x + 34.0, rect.center().y - galley.size().y * 0.5),
         galley,
         text_color,
     );
@@ -163,10 +164,9 @@ pub(super) fn titlebar(ui: &mut Ui, app: &mut MuxApp) {
             .max_rect(inner)
             .layout(Layout::left_to_right(Align::Center)),
         |ui| {
-            // Brand mark: the artwork from 图标.svg, rounded to the same radius
-            // the Material rail uses.
+            // Brand mark: the artwork from 图标.svg, rounded to the rail radius.
             let (logo_rect, _) = ui.allocate_exact_size(Vec2::splat(30.0), Sense::hover());
-            let radius = CornerRadius::same(9);
+            let radius = CornerRadius::same(8);
             if app.brand.is_none() {
                 app.brand = super::icon::brand_texture(ui.ctx());
             }
@@ -175,12 +175,6 @@ pub(super) fn titlebar(ui: &mut Ui, app: &mut MuxApp) {
                     let uv = egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0));
                     ui.painter()
                         .add(egui::Shape::image(tex.id(), logo_rect, uv, Color32::WHITE));
-                    ui.painter().rect_stroke(
-                        logo_rect,
-                        radius,
-                        Stroke::new(1.0_f32, p.outline_variant),
-                        StrokeKind::Inside,
-                    );
                 }
                 None => {
                     ui.painter()
@@ -197,15 +191,11 @@ pub(super) fn titlebar(ui: &mut Ui, app: &mut MuxApp) {
             ui.add_space(10.0);
             ui.label(
                 egui::RichText::new("MuxVideo")
-                    .size(14.5)
+                    .size(16.0)
                     .strong()
                     .color(p.on_surface),
             );
-            ui.add_space(12.0);
-            let (sep_rect, _) = ui.allocate_exact_size(vec2(1.0, 22.0), Sense::hover());
-            ui.painter()
-                .rect_filled(sep_rect, CornerRadius::same(1), p.outline_variant);
-            ui.add_space(12.0);
+            ui.add_space(16.0);
 
             file_badge(ui, app, Target::A);
             ui.add_space(6.0);
@@ -238,11 +228,7 @@ pub(super) fn titlebar(ui: &mut Ui, app: &mut MuxApp) {
                     ui.ctx()
                         .send_viewport_cmd(egui::ViewportCommand::Minimized(true));
                 }
-                ui.add_space(6.0);
-                let (sep_rect, _) = ui.allocate_exact_size(vec2(1.0, 22.0), Sense::hover());
-                ui.painter()
-                    .rect_filled(sep_rect, CornerRadius::same(1), p.outline_variant);
-                ui.add_space(4.0);
+                ui.add_space(8.0);
                 let full = app.immersive();
                 if icon_button(ui, &p, 38.0, full, icons::fullscreen)
                     .on_hover_text(app.t("全屏画面（F）", "Full-screen picture (F)"))
@@ -308,7 +294,7 @@ fn rail_item(
             RailTab::Viewer => app.t("查看", "View"),
             RailTab::Settings => app.t("设置", "Settings"),
         },
-        FontId::proportional(11.5),
+        FontId::proportional(12.0),
         if active {
             p.on_surface
         } else {
@@ -384,7 +370,7 @@ pub(super) fn rail(ui: &mut Ui, app: &mut MuxApp) {
                 pos2(foot.center().x, foot.min.y + 74.0),
                 Align2::CENTER_CENTER,
                 format!("v{}", env!("CARGO_PKG_VERSION")),
-                FontId::proportional(10.0),
+                FontId::proportional(11.0),
                 p.outline,
             );
         },
@@ -433,10 +419,7 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
             ui.add_space(10.0);
 
             if matches!(app.settings.mode, CompareMode::Pair | CompareMode::Wipe) {
-                let (sep, _) = ui.allocate_exact_size(vec2(1.0, 20.0), Sense::hover());
-                ui.painter()
-                    .rect_filled(sep, CornerRadius::same(1), p.outline_variant);
-                ui.add_space(8.0);
+                ui.add_space(12.0);
                 let axis_labels = [
                     SplitAxis::Horizontal.label(app.settings.lang),
                     SplitAxis::Vertical.label(app.settings.lang),
@@ -567,14 +550,9 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
     app.stage_rect = stage;
     app.stage_reported = true;
 
+    // Stage: tone alone separates it from the chrome (M3 shape 12, elevation 0).
     ui.painter()
-        .rect_filled(stage, CornerRadius::same(18), p.surface_container_lowest);
-    ui.painter().rect_stroke(
-        stage,
-        CornerRadius::same(18),
-        Stroke::new(1.0_f32, p.outline_variant.gamma_multiply(0.5)),
-        StrokeKind::Inside,
-    );
+        .rect_filled(stage, CornerRadius::same(12), p.surface_container_lowest);
 
     if !app.has_video() {
         empty_stage(ui, app, stage);
@@ -589,7 +567,7 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
             pos2(stage.min.x + 16.0, stage.min.y + 14.0),
             Align2::LEFT_TOP,
             caption,
-            FontId::proportional(11.5),
+            FontId::proportional(12.0),
             p.on_surface_variant.gamma_multiply(0.55),
         );
     }
@@ -612,12 +590,11 @@ fn empty_stage(ui: &mut Ui, app: &mut MuxApp, stage: Rect) {
     let p = app.palette.clone();
     let center = Rect::from_center_size(stage.center(), vec2(stage.width().min(560.0), 260.0));
 
-    // Drop hint.
-    ui.painter().rect_stroke(
+    // Drop zone: a container tone, no outline.
+    ui.painter().rect_filled(
         center.shrink(2.0),
-        CornerRadius::same(16),
-        Stroke::new(1.2_f32, p.outline_variant),
-        StrokeKind::Inside,
+        CornerRadius::same(12),
+        p.surface_container_low,
     );
 
     ui.scope_builder(
@@ -640,7 +617,7 @@ fn empty_stage(ui: &mut Ui, app: &mut MuxApp, stage: Rect) {
                 egui::RichText::new(
                     app.t("拖入视频，或直接打开", "Drop a video here, or open one"),
                 )
-                .size(17.0)
+                .size(16.0)
                 .strong()
                 .color(p.on_surface),
             );
@@ -694,33 +671,40 @@ fn drift_text(app: &MuxApp) -> Option<String> {
     Some(format!("同步 Δ{:+.0} ms", drift * 1000.0))
 }
 
-/// Big primary play button.
+/// Big primary play button (M3 FAB: 56 dp, 16 dp corner).
 fn play_button(ui: &mut Ui, app: &MuxApp) -> egui::Response {
     let p = app.palette.clone();
-    let (rect, response) = ui.allocate_exact_size(Vec2::splat(48.0), Sense::click());
+    let (rect, response) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::click());
     let hover = ui
         .ctx()
         .animate_bool_with_time(response.id, response.hovered(), 0.12);
     let fill = if response.hovered() {
-        p.primary.gamma_multiply(1.0 + hover * 0.1)
+        controls::mix(p.primary, p.on_primary, hover * 0.08)
     } else {
         p.primary
     };
-    ui.painter().circle_filled(rect.center(), 24.0, fill);
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(16), fill);
+    // Focus/hover state layer ring at 8 % — no shadow (elevation 0 surfaces).
     if response.hovered() {
+        ui.painter().rect_filled(
+            rect.expand(2.0),
+            CornerRadius::same(18),
+            p.primary.gamma_multiply(0.10),
+        );
         ui.painter()
-            .circle_filled(rect.center(), 28.0, p.primary.gamma_multiply(0.18));
+            .rect_filled(rect, CornerRadius::same(16), fill);
     }
-    let icon_rect = Rect::from_center_size(rect.center(), Vec2::splat(22.0));
+    let icon_rect = Rect::from_center_size(rect.center(), Vec2::splat(24.0));
     let mut child = ui.new_child(
         UiBuilder::new()
             .max_rect(icon_rect)
             .layout(Layout::centered_and_justified(egui::Direction::LeftToRight)),
     );
     if app.is_playing() {
-        icons::pause(&mut child, 22.0, p.on_primary);
+        icons::pause(&mut child, 24.0, p.on_primary);
     } else {
-        icons::play(&mut child, 22.0, p.on_primary);
+        icons::play(&mut child, 24.0, p.on_primary);
     }
     response
 }
@@ -731,8 +715,9 @@ const SPEEDS: [f64; 8] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 4.0];
 pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
     let p = app.palette.clone();
     let card = ui.max_rect();
+    // M3 card: 12 dp corner, container tone, no border, no shadow.
     ui.painter()
-        .rect_filled(card, CornerRadius::same(28), p.surface_container_low);
+        .rect_filled(card, CornerRadius::same(12), p.surface_container_low);
 
     // Padding around the transport controls doubles as a drag handle.
     if ui
@@ -880,7 +865,7 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
             };
             ui.label(
                 egui::RichText::new(info)
-                    .size(11.5)
+                    .size(12.0)
                     .color(p.on_surface_variant),
             );
 
@@ -908,7 +893,7 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
                 ui.add_space(10.0);
                 ui.label(
                     egui::RichText::new(parts.join("  ·  "))
-                        .size(10.5)
+                        .size(11.0)
                         .color(p.outline),
                 );
             }
