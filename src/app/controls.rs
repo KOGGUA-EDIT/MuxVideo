@@ -16,16 +16,26 @@ use crate::ui::Palette;
 /// Drawn after the widget so it tints the fill and the glyph alike, then the
 /// animation clock keeps repainting until it has faded out.
 pub fn ripple(ui: &Ui, resp: &Response, rect: Rect, color: Color32) {
-    const DURATION: f64 = 0.42;
+    const DURATION: f64 = 0.50;
+    thread_local! {
+        static RIPPLES: std::cell::RefCell<std::collections::HashMap<egui::Id, (egui::Pos2, f64)>> =
+            std::cell::RefCell::new(std::collections::HashMap::new());
+    }
     let id = resp.id.with("ripple");
     let now = ui.input(|i| i.time);
-    if resp.contains_pointer()
-        && ui.input(|i| i.pointer.any_pressed())
-        && let Some(pos) = ui.input(|i| i.pointer.interact_pos())
-    {
-        ui.ctx().data_mut(|d| d.insert_temp(id, (pos, now)));
+    // Hit-test the press by hand: the pointer plumbing in this app is driven by
+    // the raw mouse path, and a widget's own `contains_pointer` is not reliable
+    // for every control (rows and chips track clicks themselves).
+    let pressed_here = ui.input(|i| {
+        i.pointer.any_pressed()
+            && i.pointer
+                .interact_pos()
+                .is_some_and(|pos| rect.contains(pos))
+    });
+    if pressed_here && let Some(pos) = ui.input(|i| i.pointer.interact_pos()) {
+        RIPPLES.with(|m| m.borrow_mut().insert(id, (pos, now)));
     }
-    let Some((origin, t0)) = ui.ctx().data(|d| d.get_temp::<(egui::Pos2, f64)>(id)) else {
+    let Some((origin, t0)) = RIPPLES.with(|m| m.borrow().get(&id).copied()) else {
         return;
     };
     let t = ((now - t0) / DURATION) as f32;
@@ -39,7 +49,7 @@ pub fn ripple(ui: &Ui, resp: &Response, rect: Rect, color: Color32) {
         .map(|corner| corner.distance(origin))
         .fold(0.0_f32, f32::max);
     let eased = 1.0 - (1.0 - t).powi(2);
-    let alpha = (1.0 - t).powi(2) * 0.14;
+    let alpha = (1.0 - t).powi(2) * 0.20;
     ui.painter()
         .with_clip_rect(rect)
         .circle_filled(origin, far * eased, color.gamma_multiply(alpha));
@@ -502,6 +512,22 @@ pub fn switch(ui: &mut Ui, palette: &Palette, on: &mut bool) -> Response {
     };
     ui.painter()
         .rect_filled(rect, CornerRadius::same(16), track_fill);
+    // No ripple on a switch: the press state is a tint of the track itself, so
+    // nothing can spill past the rounded ends.
+    let press = if response.is_pointer_button_down_on() {
+        0.12
+    } else if response.hovered() {
+        0.08
+    } else {
+        0.0
+    };
+    if press > 0.0 {
+        ui.painter().rect_filled(
+            rect,
+            CornerRadius::same(16),
+            palette.on_surface.gamma_multiply(press),
+        );
+    }
     let knob_r = 10.0 + 2.0 * t;
     let inset = 4.0 + knob_r;
     let cx = rect.min.x + inset + (rect.width() - inset * 2.0) * t;
@@ -512,7 +538,6 @@ pub fn switch(ui: &mut Ui, palette: &Palette, on: &mut bool) -> Response {
     };
     ui.painter()
         .circle_filled(pos2(cx, rect.center().y), knob_r, knob_color);
-    ripple(ui, &response, rect, if *on { palette.primary } else { palette.on_surface });
     response
 }
 
