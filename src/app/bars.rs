@@ -809,6 +809,8 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
         pos2(inner.min.x, inner.min.y + 44.0),
         pos2(inner.max.x, inner.max.y),
     );
+    // Filled in by the speed chip so the rate menu can hang off it afterwards.
+    let mut speed_anchor = Rect::NOTHING;
     ui.scope_builder(
         UiBuilder::new()
             .max_rect(row2)
@@ -944,23 +946,15 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
                 }
                 ui.add_space(8.0);
 
-                // Speed chip cycles through the common rates.
-                let speed_label = format!("{}×", trim_speed(app.settings.speed));
-                let speed_chip = controls::chip(ui, &p, &speed_label, app.settings.speed != 1.0);
-                if speed_chip.hovered() {
-                    app.hover_hint = Some(app.t("播放速度", "Playback speed"));
-                }
-                if speed_chip.clicked() {
-                    let idx = SPEEDS
-                        .iter()
-                        .position(|s| (*s - app.settings.speed).abs() < 0.001)
-                        .unwrap_or(3);
-                    app.settings.speed = SPEEDS[(idx + 1) % SPEEDS.len()];
-                    app.apply_speed();
-                }
+                // Speed: the chip pulls up a menu of the common rates.
+                speed_anchor = speed_chip(ui, app, &p);
             });
         },
     );
+
+    if speed_anchor != Rect::NOTHING {
+        speed_menu(ui, app, &p, speed_anchor, row1);
+    }
 
     // Transient feedback (volume / zoom). Drawn over the transport because the
     // stage is a native surface: anything egui paints there stays hidden.
@@ -984,6 +978,136 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
                 galley,
                 p.on_surface.gamma_multiply(alpha),
             );
+        }
+    }
+}
+
+/// Playback-rate chip: shows the rate plus a chevron that flips while the menu
+/// is open. Returns its rect so the menu can hang off it.
+fn speed_chip(ui: &mut Ui, app: &mut MuxApp, p: &crate::ui::Palette) -> Rect {
+    let ctx = ui.ctx().clone();
+    let label = format!("{}×", trim_speed(app.settings.speed));
+    let galley = ui
+        .painter()
+        .layout_no_wrap(label.clone(), FontId::proportional(14.0), p.on_surface);
+    let size = vec2(galley.size().x + 42.0, 32.0);
+    let (rect, resp) = ui.allocate_exact_size(size, Sense::click());
+
+    let hover = ctx.animate_bool_with_time(resp.id.with("hover"), resp.hovered(), 0.1);
+    let open = ctx.animate_bool_with_time(resp.id.with("open"), app.speed_menu, 0.16);
+    let lit = app.settings.speed != 1.0 || app.speed_menu;
+    let base = if lit {
+        p.secondary_container
+    } else {
+        p.surface_container_high
+    };
+    ui.painter()
+        .rect_filled(rect, CornerRadius::same(8), controls::mix(base, p.on_surface, hover * 0.08));
+    let fg = if lit {
+        p.on_secondary_container
+    } else {
+        p.on_surface
+    };
+    ui.painter().text(
+        pos2(rect.min.x + 12.0, rect.center().y),
+        egui::Align2::LEFT_CENTER,
+        label,
+        FontId::proportional(14.0),
+        fg,
+    );
+    // Chevron points up while closed (the menu rises) and rotates down once it
+    // is out, so the chip itself shows the state change.
+    let c = pos2(rect.max.x - 16.0, rect.center().y);
+    let ang = std::f32::consts::PI * open;
+    let (s, co) = ang.sin_cos();
+    let pt = |dx: f32, dy: f32| pos2(c.x + dx * co - dy * s, c.y + dx * s + dy * co);
+    let stroke = egui::Stroke::new(1.5_f32, fg);
+    ui.painter()
+        .line_segment([pt(-4.5, 2.0), pt(0.0, -2.5)], stroke);
+    ui.painter()
+        .line_segment([pt(0.0, -2.5), pt(4.5, 2.0)], stroke);
+
+    if resp.clicked() {
+        app.speed_menu = !app.speed_menu;
+    }
+    if resp.hovered() {
+        app.hover_hint = Some(app.t("播放速度", "Playback speed"));
+    }
+    rect
+}
+
+/// Rate menu: a strip that rises into the scrubber row above the chip, so it
+/// stays inside the egui area and never lands under the native video surface.
+fn speed_menu(ui: &mut Ui, app: &mut MuxApp, p: &crate::ui::Palette, anchor: Rect, band: Rect) {
+    let ctx = ui.ctx().clone();
+    let t = ctx.animate_bool_with_time(ui.id().with("speed-menu"), app.speed_menu, 0.16);
+    if !app.speed_menu && t <= 0.001 {
+        return;
+    }
+
+    let item_w = 50.0;
+    let gap = 2.0;
+    let pad = 6.0;
+    let n = SPEEDS.len() as f32;
+    let w = n * item_w + (n - 1.0) * gap + pad * 2.0;
+    let h = band.height().max(36.0);
+    let left = (anchor.max.x - w).max(band.min.x + 4.0);
+    let top = band.min.y + (1.0 - t) * 8.0;
+    let rect = Rect::from_min_size(pos2(left, top), vec2(w, h));
+
+    ui.painter().rect_filled(
+        rect,
+        CornerRadius::same(16),
+        p.surface_container_high.gamma_multiply(t),
+    );
+
+    let mut chosen: Option<f64> = None;
+    for (i, speed) in SPEEDS.iter().enumerate() {
+        let item = Rect::from_min_size(
+            pos2(left + pad + i as f32 * (item_w + gap), top + 4.0),
+            vec2(item_w, h - 8.0),
+        );
+        let resp = ui.interact(item, ui.id().with(("speed-item", i)), Sense::click());
+        if resp.hovered() {
+            ui.painter().rect_filled(
+                item,
+                CornerRadius::same(10),
+                p.on_surface.gamma_multiply(0.08 * t),
+            );
+        }
+        let current = (app.settings.speed - *speed).abs() < 0.001;
+        let col = if current { p.primary } else { p.on_surface };
+        ui.painter().text(
+            pos2(item.center().x, item.center().y - 1.0),
+            egui::Align2::CENTER_CENTER,
+            format!("{}×", trim_speed(*speed)),
+            FontId::proportional(13.0),
+            col.gamma_multiply(t),
+        );
+        if current {
+            ui.painter().circle_filled(
+                pos2(item.center().x, item.max.y - 5.0),
+                1.8,
+                p.primary.gamma_multiply(t),
+            );
+        }
+        if resp.clicked() && t > 0.5 {
+            chosen = Some(*speed);
+        }
+    }
+
+    if let Some(speed) = chosen {
+        app.settings.speed = speed;
+        app.apply_speed();
+        app.speed_menu = false;
+    }
+    if app.speed_menu {
+        let clicked_outside = ctx.input(|i| i.pointer.any_click())
+            && ctx
+                .input(|i| i.pointer.interact_pos())
+                .is_some_and(|pos| !rect.contains(pos) && !anchor.contains(pos));
+        if clicked_outside || ctx.input(|i| i.key_pressed(egui::Key::Escape)) {
+            app.speed_menu = false;
         }
     }
 }

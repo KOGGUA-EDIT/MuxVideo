@@ -111,6 +111,8 @@ pub struct MuxApp {
     /// Tooltips cannot be used next to the stage: the native video planes sit
     /// above egui and swallow anything drawn over the picture.
     pub(super) hover_hint: Option<&'static str>,
+    /// Whether the playback-speed menu is expanded in the transport bar.
+    pub(super) speed_menu: bool,
     /// Last known window rectangle, for change logging.
     last_viewport: Option<egui::Rect>,
     /// Start of the flicker clock (CompareMode::Blink).
@@ -201,6 +203,7 @@ impl MuxApp {
             window_move: None,
             last_click: None,
             hover_hint: None,
+            speed_menu: false,
             last_viewport: None,
             blink_clock: Instant::now(),
             immersive: false,

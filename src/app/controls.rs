@@ -452,17 +452,18 @@ pub fn switch(ui: &mut Ui, palette: &Palette, on: &mut bool) -> Response {
     let t = ui
         .ctx()
         .animate_bool_with_time(response.id.with("knob"), *on, 0.16);
-    let track = Rect::from_center_size(rect.center(), vec2(44.0, 26.0));
+    // M3 switch: 52 x 32 track, handle 20 dp at rest growing to 24 dp, and the
+    // handle always keeps 4 dp of track visible on the side it travels towards.
     let track_fill = if *on {
         palette.primary
     } else {
         palette.surface_container_highest
     };
     ui.painter()
-        .rect_filled(track, CornerRadius::same(13), track_fill);
-    let travel = track.width() - 18.0;
-    let cx = track.min.x + 9.0 + travel * t;
-    let knob_r = 6.0 + 3.0 * t;
+        .rect_filled(rect, CornerRadius::same(16), track_fill);
+    let knob_r = 10.0 + 2.0 * t;
+    let inset = 4.0 + knob_r;
+    let cx = rect.min.x + inset + (rect.width() - inset * 2.0) * t;
     let knob_color = if *on {
         palette.on_primary
     } else {

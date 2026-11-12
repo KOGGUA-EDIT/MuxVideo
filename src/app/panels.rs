@@ -26,14 +26,14 @@ pub(super) fn playlist(ui: &mut Ui, app: &mut MuxApp) {
     ui.painter()
         .rect_filled(head, CornerRadius::ZERO, p.surface);
     ui.painter().text(
-        pos2(head.min.x + 10.0, head.center().y),
+        pos2(head.min.x + 12.0, head.center().y),
         egui::Align2::LEFT_CENTER,
         app.t("播放列表", "Playlist"),
         FontId::proportional(14.0),
         p.on_surface,
     );
     ui.painter().text(
-        pos2(head.min.x + 96.0, head.center().y + 1.0),
+        pos2(head.min.x + 98.0, head.center().y + 1.0),
         egui::Align2::LEFT_CENTER,
         format!("{} {}", app.playlist.len(), app.t("项", "items")),
         FontId::proportional(11.0),
@@ -97,10 +97,10 @@ pub(super) fn playlist(ui: &mut Ui, app: &mut MuxApp) {
                         let entry = app.playlist[index].clone();
                         let selected = app.selected == Some(index);
                         let row = playlist_row(ui, app, index, &entry.name, entry.size, selected);
-                        if row.double_clicked() {
-                            action = Some((index, Target::A));
-                        } else if let Some(target) = row_action(ui, app, row.rect, index) {
+                        if let Some(target) = row_action(ui, app, row.rect, index) {
                             action = Some((index, target));
+                        } else if row.clicked() {
+                            action = Some((index, Target::A));
                         }
                         // Right click removes from the list only.
                         if row.secondary_clicked() {
@@ -122,11 +122,11 @@ pub(super) fn playlist(ui: &mut Ui, app: &mut MuxApp) {
 
     // Footer hint.
     ui.painter().text(
-        pos2(head.min.x + 10.0, ui.max_rect().max.y - 16.0),
+        pos2(head.min.x + 12.0, ui.max_rect().max.y - 16.0),
         egui::Align2::LEFT_CENTER,
         app.t(
-            "双击载入 A 面 · 右键移出列表",
-            "Double-click to load into A · right-click to remove",
+            "单击载入 A 面 · 右键移出列表",
+            "Click to load into A · right-click to remove",
         ),
         FontId::proportional(11.0),
         p.outline,
@@ -157,7 +157,9 @@ fn media_info_panel(ui: &mut Ui, app: &MuxApp, rect: Rect) {
 
     ui.painter()
         .rect_filled(rect, CornerRadius::same(12), p.surface_container_low);
-    let inner = rect.shrink2(vec2(14.0, 12.0));
+    // Same 12 dp gutter as the list rows and the footer hint, so the card's
+    // text sits on one column with everything around it.
+    let inner = rect.shrink2(vec2(6.0, 12.0));
 
     let mut y = inner.min.y;
     ui.painter().text(
@@ -353,7 +355,7 @@ fn playlist_row(
             .rect_filled(rect.shrink2(vec2(2.0, 1.0)), CornerRadius::same(8), fill);
     }
 
-    let inner = rect.shrink2(vec2(10.0, 6.0));
+    let inner = rect.shrink2(vec2(12.0, 6.0));
     let name_color = if selected {
         p.on_secondary_container
     } else {
@@ -361,21 +363,21 @@ fn playlist_row(
     };
     let short = super::bars::truncate(name, 26);
     ui.painter().text(
-        pos2(inner.min.x + 2.0, inner.min.y + 9.0),
+        pos2(inner.min.x, inner.min.y + 9.0),
         egui::Align2::LEFT_CENTER,
         format!("{:02}", index + 1),
         FontId::monospace(11.0),
         p.outline,
     );
     ui.painter().text(
-        pos2(inner.min.x + 28.0, inner.min.y + 9.0),
+        pos2(inner.min.x + 26.0, inner.min.y + 9.0),
         egui::Align2::LEFT_CENTER,
         short,
         FontId::proportional(14.0),
         name_color,
     );
     ui.painter().text(
-        pos2(inner.min.x + 28.0, inner.min.y + 28.0),
+        pos2(inner.min.x + 26.0, inner.min.y + 28.0),
         egui::Align2::LEFT_CENTER,
         format_size(size),
         FontId::proportional(11.0),
@@ -384,8 +386,8 @@ fn playlist_row(
 
     // Plane assignment chips.
     let chip_size = vec2(40.0, 24.0);
-    let a_rect = Rect::from_min_size(pos2(rect.max.x - 96.0, rect.center().y - 12.0), chip_size);
-    let b_rect = Rect::from_min_size(pos2(rect.max.x - 50.0, rect.center().y - 12.0), chip_size);
+    let a_rect = Rect::from_min_size(pos2(rect.max.x - 98.0, rect.center().y - 12.0), chip_size);
+    let b_rect = Rect::from_min_size(pos2(rect.max.x - 52.0, rect.center().y - 12.0), chip_size);
     let listed = app.playlist_path(index);
     for (plane, chip_rect, label) in [(Target::A, a_rect, "A"), (Target::B, b_rect, "B")] {
         let id = ui.id().with(("pl-chip", index, label));
@@ -426,11 +428,11 @@ fn playlist_row(
 /// Chip hit-testing for the row (returns the plane to load into).
 fn row_action(ui: &Ui, app: &MuxApp, row: Rect, index: usize) -> Option<Target> {
     let a_rect = Rect::from_min_size(
-        pos2(row.max.x - 96.0, row.center().y - 12.0),
+        pos2(row.max.x - 98.0, row.center().y - 12.0),
         vec2(40.0, 24.0),
     );
     let b_rect = Rect::from_min_size(
-        pos2(row.max.x - 50.0, row.center().y - 12.0),
+        pos2(row.max.x - 52.0, row.center().y - 12.0),
         vec2(40.0, 24.0),
     );
     if ui.ctx().input(|i| i.pointer.any_click())
