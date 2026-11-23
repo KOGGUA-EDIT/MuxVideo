@@ -137,6 +137,8 @@ mpv_api! {
     initialize: "mpv_initialize", b"mpv_initialize\0" => fn(MpvHandle) -> c_int;
     command: "mpv_command", b"mpv_command\0" =>
         fn(MpvHandle, *const *const c_char) -> c_int;
+    command_async: "mpv_command_async", b"mpv_command_async\0" =>
+        fn(MpvHandle, u64, *const *const c_char) -> c_int;
     command_string: "mpv_command_string", b"mpv_command_string\0" =>
         fn(MpvHandle, *const c_char) -> c_int;
     set_property: "mpv_set_property", b"mpv_set_property\0" =>

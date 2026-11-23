@@ -634,11 +634,15 @@ impl Media {
     /// Keeps the visible slave aligned with the A plane.
     ///
     /// A is always the master. Hidden planes are paused so they do not burn
-    /// decode time.
-    pub fn sync_playback(&mut self, mode: CompareMode) {
+    /// decode time. Skips correction while scrubbing or while either plane is
+    /// mid-seek so a slow 4K decode is never interrupted mid-flight.
+    pub fn sync_playback(&mut self, mode: CompareMode, scrubbing: bool) {
         let Some(a) = self.player_a.as_ref() else {
             return;
         };
+        if scrubbing || a.seeking() {
+            return;
+        }
         if self.last_sync.elapsed() < SYNC_INTERVAL {
             return;
         }
@@ -651,6 +655,9 @@ impl Media {
         // B: only decoded while it is on screen.
         if let Some(b) = self.player_b.as_ref() {
             if self.plane_b.visible && mode.needs_b() {
+                if b.seeking() {
+                    return;
+                }
                 let tb = b.time_pos();
                 self.drift = ta - tb;
                 if self.drift.abs() > MAX_DRIFT_SECS || tb <= 0.0 {

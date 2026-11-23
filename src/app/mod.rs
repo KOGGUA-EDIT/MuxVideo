@@ -958,7 +958,8 @@ impl MuxApp {
         if self.frame_no == 1 {
             crate::app::diag::mark("f1: layout synced");
         }
-        self.media.sync_playback(self.settings.mode);
+        let scrubbing = self.scrub.is_some() || self.gesture.is_some();
+        self.media.sync_playback(self.settings.mode, scrubbing);
         self.stage_reported = false;
         self.sync_fit(ppp);
     }

@@ -806,23 +806,41 @@ pub(super) fn transport(ui: &mut Ui, app: &mut MuxApp) {
             } else {
                 None
             };
-            // While scrubbing, report the dragged position instead of the
-            // decoder's, so the time label tracks the thumb without jitter.
-            //
-            // This must not stomp on a picture drag: `input` owns `scrub` there,
-            // and clearing it every frame made the bar and the time label flip
-            // between the drag target and the decoder position — the "seek bar
-            // jumps while I scrub" report.
+            // Slider scrub state: throttle fast keyframe seeks while dragging,
+            // then land an exact seek once the pointer is released.
+            let scrub_id = resp.response.id.with("slider-scrub-state");
+            let (was_dragging, mut last_seek_t, mut last_target) = ui
+                .data_mut(|d| d.get_temp::<(bool, f64, f64)>(scrub_id))
+                .unwrap_or((false, -1.0, pos));
+            let now = ui.input(|i| i.time);
+            let is_4k = app.media.max_height() >= 1800;
+            let min_gap = if is_4k { 0.09 } else { 0.03 };
+
             if resp.dragging {
                 app.scrub = target;
-            } else if app.gesture.is_none() {
-                app.scrub = None;
+                if let Some(p_target) = target {
+                    last_target = p_target;
+                    if resp.changed && (now - last_seek_t >= min_gap || last_seek_t < 0.0) {
+                        app.media.seek_all_fast(p_target);
+                        last_seek_t = now;
+                    }
+                }
+            } else if was_dragging {
+                // Pointer just released: commit exact frame landing.
+                let final_pos = target.unwrap_or(last_target);
+                app.seek_to(final_pos);
+                last_seek_t = -1.0;
+            } else {
+                if app.gesture.is_none() {
+                    app.scrub = None;
+                }
+                if resp.changed
+                    && let Some(p_target) = target
+                {
+                    app.seek_to(p_target);
+                }
             }
-            if resp.changed
-                && let Some(pos) = target
-            {
-                app.seek_to(pos);
-            }
+            ui.data_mut(|d| d.insert_temp(scrub_id, (resp.dragging, last_seek_t, last_target)));
             ui.allocate_ui_with_layout(
                 vec2(label_w, 20.0),
                 Layout::left_to_right(Align::Center),

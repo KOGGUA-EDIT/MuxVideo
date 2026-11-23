@@ -26,7 +26,7 @@ use crate::mpv::lib::{
 const EVENT_QUEUE_CAPACITY: usize = 512;
 
 /// Properties mirrored into [`PropertyCache`] (one entry each).
-const OBSERVED_PROPERTIES: [&str; 8] = [
+const OBSERVED_PROPERTIES: [&str; 9] = [
     "time-pos",
     "duration",
     "pause",
@@ -34,6 +34,7 @@ const OBSERVED_PROPERTIES: [&str; 8] = [
     "volume",
     "speed",
     "core-idle",
+    "seeking",
     "filename",
 ];
 
@@ -74,6 +75,7 @@ struct PropertyCache {
     paused: AtomicBool,
     eof_reached: AtomicBool,
     core_idle: AtomicBool,
+    seeking: AtomicBool,
     filename: Mutex<String>,
 }
 
@@ -87,6 +89,7 @@ impl PropertyCache {
             paused: AtomicBool::new(false),
             eof_reached: AtomicBool::new(false),
             core_idle: AtomicBool::new(true),
+            seeking: AtomicBool::new(false),
             filename: Mutex::new(String::new()),
         }
     }
@@ -101,6 +104,7 @@ impl PropertyCache {
             "pause" => self.paused.store(parse_bool(value), Ordering::Relaxed),
             "eof-reached" => self.eof_reached.store(parse_bool(value), Ordering::Relaxed),
             "core-idle" => self.core_idle.store(parse_bool(value), Ordering::Relaxed),
+            "seeking" => self.seeking.store(parse_bool(value), Ordering::Relaxed),
             "filename" => {
                 let mut filename = lock(&self.filename);
                 filename.clear();
@@ -395,6 +399,11 @@ impl MpvPlayer {
         self.cache.core_idle()
     }
 
+    /// True while libmpv is mid-seek (decoding towards a target frame).
+    pub fn seeking(&self) -> bool {
+        self.cache.seeking.load(Ordering::Relaxed)
+    }
+
     /// File name currently reported by mpv (empty until a file loads).
     pub fn filename(&self) -> String {
         self.cache.filename()
@@ -405,7 +414,7 @@ impl MpvPlayer {
             return;
         }
         let target = secs.max(0.0);
-        let _ = self.command(&["seek", &format!("{target:.3}"), "absolute+exact"]);
+        let _ = self.command_async(&["seek", &format!("{target:.3}"), "absolute+exact"]);
     }
 
     /// Snaps to the nearest keyframe instead of landing on the exact frame.
@@ -420,14 +429,14 @@ impl MpvPlayer {
             return;
         }
         let target = secs.max(0.0);
-        let _ = self.command(&["seek", &format!("{target:.3}"), "absolute+keyframes"]);
+        let _ = self.command_async(&["seek", &format!("{target:.3}"), "absolute+keyframes"]);
     }
 
     pub fn seek_relative(&self, secs: f64) {
         if !secs.is_finite() {
             return;
         }
-        let _ = self.command(&["seek", &format!("{secs:.3}"), "relative+exact"]);
+        let _ = self.command_async(&["seek", &format!("{secs:.3}"), "relative+exact"]);
     }
 
     pub fn set_speed(&self, speed: f64) {
@@ -576,6 +585,23 @@ impl MpvPlayer {
         // strings that all outlive the call.
         unsafe { (api.command)(self.handle(), pointers.as_ptr()) >= 0 }
     }
+
+    /// Enqueues a command without blocking the UI thread (ideal for seeking).
+    fn command_async(&self, args: &[&str]) -> bool {
+        let api = self.lib.api();
+        let mut owned = Vec::with_capacity(args.len());
+        for arg in args {
+            match CString::new(*arg) {
+                Ok(c_arg) => owned.push(c_arg),
+                Err(_) => return false,
+            }
+        }
+        let mut pointers: Vec<*const c_char> = owned.iter().map(|arg| arg.as_ptr()).collect();
+        pointers.push(std::ptr::null());
+        // SAFETY: `mpv_command_async` copies the NUL-terminated array before
+        // returning, and all CStrings outlive this FFI call.
+        unsafe { (api.command_async)(self.handle(), 0, pointers.as_ptr()) >= 0 }
+    }
 }
 
 impl Drop for MpvPlayer {
@@ -635,6 +661,8 @@ fn apply_options(api: &Api, handle: MpvHandle, wid: i64, opts: &MpvOptions) -> a
         ("cache", "yes".to_owned()),
         ("cache-secs", opts.cache_secs.to_string()),
         ("demuxer-max-bytes", "256MiB".to_owned()),
+        ("demuxer-max-back-bytes", "128MiB".to_owned()),
+        ("hr-seek-framedrop", "yes".to_owned()),
         (
             "loop-file",
             if opts.loop_file { "inf" } else { "no" }.to_owned(),
