@@ -135,7 +135,8 @@ impl StateLayer {
             .max(focus)
     }
 
-    /// Paints the layer over `rect` using the widget's `content` colour.
+    /// Paints the layer over `rect` using the widget's `content` colour, plus
+    /// a 2 dp M3 focus ring when the widget owns keyboard focus.
     pub fn paint(
         ui: &egui::Ui,
         rect: Rect,
@@ -147,6 +148,22 @@ impl StateLayer {
         if opacity > 0.001 {
             ui.painter()
                 .rect_filled(rect, radius, Self::overlay(content, opacity));
+        }
+        if response.has_focus() {
+            let ring = rect.expand(2.0);
+            let bump = |r: u8| r.saturating_add(2);
+            let ring_radius = CornerRadius {
+                nw: bump(radius.nw),
+                ne: bump(radius.ne),
+                sw: bump(radius.sw),
+                se: bump(radius.se),
+            };
+            ui.painter().rect_stroke(
+                ring,
+                ring_radius,
+                Stroke::new(2.0_f32, content),
+                StrokeKind::Outside,
+            );
         }
     }
 }

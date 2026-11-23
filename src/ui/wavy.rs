@@ -49,7 +49,7 @@ const WAVE_RAMP_IN: f32 = 16.0;
 /// Horizontal distance over which the wave tapers out before the handle.
 const WAVE_TAPER: f32 = 20.0;
 /// Upper bound on mesh segments, so a very wide track cannot explode.
-const MAX_SEGMENTS: usize = 1024;
+const MAX_SEGMENTS: usize = 1536;
 
 /// Handle body height.
 const HANDLE_HEIGHT: f32 = 18.0;
@@ -215,11 +215,13 @@ fn wavy_slider_impl(
 
     if t > EPSILON {
         let phase = wave_phase(ui);
+        let feather = (1.0 / ui.ctx().pixels_per_point()).clamp(0.5, 1.5);
         painter.add(Shape::mesh(wavy_band_mesh(
             track,
             active_end,
             amplitude,
             phase,
+            feather,
             active_color,
         )));
     }
@@ -266,12 +268,21 @@ fn wave_phase(ui: &egui::Ui) -> f32 {
     (turns.rem_euclid(1.0) * std::f64::consts::TAU) as f32
 }
 
-/// The filled band between the wave's upper and lower edge.
+/// The filled band between the wave's upper and lower edge, with a 1-device-px
+/// alpha-feathered skirt on both sides so it stays smooth even with MSAA off.
 ///
-/// One vertex pair per horizontal pixel: two triangles per segment. The shape
-/// is a capsule at the left end, flat where it meets the handle, and round again
-/// at the right end when the played span reaches the end of the track.
-fn wavy_band_mesh(track: Rect, end: f32, amplitude: f32, phase: f32, color: Color32) -> Mesh {
+/// Each sample emits four vertices along the curve normal:
+/// `[top_outer (transparent), top_inner (solid), bot_inner (solid), bot_outer (transparent)]`.
+/// Offsetting along the normal keeps stroke thickness optically uniform on steep
+/// wave slopes instead of pinching vertically.
+fn wavy_band_mesh(
+    track: Rect,
+    end: f32,
+    amplitude: f32,
+    phase: f32,
+    feather: f32,
+    color: Color32,
+) -> Mesh {
     let left = track.left();
     let span = (end - left).max(0.0);
     let mut mesh = Mesh::default();
@@ -281,26 +292,77 @@ fn wavy_band_mesh(track: Rect, end: f32, amplitude: f32, phase: f32, color: Colo
 
     let radius = track.height() * 0.5;
     let cap_right = track.right() - end <= 0.5;
-    let steps = (span.ceil() as usize).clamp(1, MAX_SEGMENTS);
-    mesh.reserve_vertices(2 * (steps + 1));
-    mesh.reserve_triangles(2 * steps);
-
+    // Denser sampling (~1.5x per logical px) keeps both the wave crests and the
+    // rounded end caps crisp without blowing up vertex counts.
+    let steps = ((span * 1.5).ceil() as usize).clamp(4, MAX_SEGMENTS);
     let center_y = track.center().y;
+
+    let mut centers = Vec::with_capacity(steps + 1);
     for i in 0..=steps {
         let x = left + span * (i as f32 / steps as f32);
-        let half = band_half_height(x, left, end, radius, cap_right);
         let wave = amplitude
             * wave_envelope(x, left, end)
             * ((std::f32::consts::TAU * (x - left) / WAVE_LENGTH) - phase).sin();
-        let y = center_y + wave;
-        mesh.colored_vertex(egui::pos2(x, y - half), color);
-        mesh.colored_vertex(egui::pos2(x, y + half), color);
+        centers.push(egui::pos2(x, center_y + wave));
+    }
+
+    let half_feather = feather * 0.5;
+    mesh.reserve_vertices(4 * (steps + 1));
+    mesh.reserve_triangles(6 * steps);
+
+    for i in 0..=steps {
+        let p = centers[i];
+        let half = band_half_height(p.x, left, end, radius, cap_right);
+        // Central-difference tangent → unit normal pointing downward (+y).
+        let prev = centers[i.saturating_sub(1)];
+        let next = centers[(i + 1).min(steps)];
+        let tx = next.x - prev.x;
+        let ty = next.y - prev.y;
+        let len = tx.hypot(ty);
+        let (nx, ny) = if len > EPSILON {
+            (-ty / len, tx / len)
+        } else {
+            (0.0, 1.0)
+        };
+
+        let inner = (half - half_feather).max(0.0);
+        let outer = half + half_feather;
+        // Fade the cap tip smoothly when half-height shrinks below half_feather.
+        let tip_alpha = if half < half_feather && half_feather > EPSILON {
+            (half / half_feather).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let core_color = if tip_alpha < 1.0 {
+            color.gamma_multiply(tip_alpha)
+        } else {
+            color
+        };
+
+        mesh.colored_vertex(
+            egui::pos2(p.x - nx * outer, p.y - ny * outer),
+            Color32::TRANSPARENT,
+        );
+        mesh.colored_vertex(egui::pos2(p.x - nx * inner, p.y - ny * inner), core_color);
+        mesh.colored_vertex(egui::pos2(p.x + nx * inner, p.y + ny * inner), core_color);
+        mesh.colored_vertex(
+            egui::pos2(p.x + nx * outer, p.y + ny * outer),
+            Color32::TRANSPARENT,
+        );
     }
 
     for i in 0..steps {
-        let base = 2 * i as u32;
-        mesh.add_triangle(base, base + 1, base + 2);
-        mesh.add_triangle(base + 1, base + 3, base + 2);
+        let a = 4 * i as u32;
+        let b = a + 4;
+        // Upper feathering skirt.
+        mesh.add_triangle(a, a + 1, b);
+        mesh.add_triangle(a + 1, b + 1, b);
+        // Solid core band.
+        mesh.add_triangle(a + 1, a + 2, b + 1);
+        mesh.add_triangle(a + 2, b + 2, b + 1);
+        // Lower feathering skirt.
+        mesh.add_triangle(a + 2, a + 3, b + 2);
+        mesh.add_triangle(a + 3, b + 3, b + 2);
     }
     mesh
 }
@@ -393,13 +455,14 @@ mod tests {
     }
 
     #[test]
-    fn mesh_is_a_wave_with_two_vertices_per_sample() {
+    fn mesh_is_a_feathered_wave_with_four_vertices_per_sample() {
         let track = Rect::from_min_max(egui::pos2(10.0, 28.0), egui::pos2(410.0, 36.0));
-        let mesh = wavy_band_mesh(track, 210.0, WAVE_AMPLITUDE, 0.0, Color32::WHITE);
+        let mesh = wavy_band_mesh(track, 210.0, WAVE_AMPLITUDE, 0.0, 1.0, Color32::WHITE);
         assert!(mesh.is_valid());
-        assert!(mesh.vertices.len() > 2);
-        assert_eq!(mesh.vertices.len() % 2, 0);
-        assert_eq!(mesh.triangles().count(), mesh.vertices.len() - 2);
+        assert!(mesh.vertices.len() >= 8);
+        assert_eq!(mesh.vertices.len() % 4, 0);
+        let samples = mesh.vertices.len() / 4;
+        assert_eq!(mesh.triangles().count(), 6 * (samples - 1));
         let min_y = mesh
             .vertices
             .iter()
@@ -410,7 +473,7 @@ mod tests {
             .iter()
             .map(|v| v.pos.y)
             .fold(f32::NEG_INFINITY, f32::max);
-        // centre 32, half height 4, amplitude 3.5 => 24.5 .. 39.5.
+        // centre 32, half height 4, amplitude 6 => well beyond 26..38.
         assert!(min_y < 26.0);
         assert!(max_y > 38.0);
     }

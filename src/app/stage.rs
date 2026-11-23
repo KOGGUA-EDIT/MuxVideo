@@ -70,6 +70,8 @@ pub struct MediaInfo {
     pub size: u64,
     /// `yuv420p`, `nv12` … the pixel format mpv decodes to.
     pub pix_fmt: String,
+    /// Compact colour-space summary, e.g. `BT.709 · BT.1886 · Limited`.
+    pub color: String,
 }
 
 impl MediaInfo {
@@ -861,6 +863,12 @@ impl Media {
             Some(bps) => format!("{:.0} Kbps", bps / 1000.0),
             None => String::new(),
         };
+        let color = format_color_tags(
+            &text("video-params/primaries"),
+            &text("video-params/gamma"),
+            &text("video-params/colormatrix"),
+            &text("video-params/colorlevels"),
+        );
         let info = MediaInfo {
             width,
             height,
@@ -872,6 +880,7 @@ impl Media {
             bitrate,
             size,
             pix_fmt,
+            color,
         };
         match plane {
             Plane::A => self.meta_a = Some(info),
@@ -907,6 +916,55 @@ fn pretty_container(raw: &str) -> String {
         return raw.to_string();
     };
     named.to_string()
+}
+
+/// Formats mpv colour metadata into a concise inspector line, e.g.
+/// `BT.709 · BT.1886 · Limited` or `BT.2020 · PQ · Limited`.
+fn format_color_tags(primaries: &str, gamma: &str, matrix: &str, levels: &str) -> String {
+    fn pretty_prim(s: &str) -> Option<&str> {
+        match s.trim() {
+            "" | "unknown" | "auto" => None,
+            "bt.709" => Some("BT.709"),
+            "bt.2020" => Some("BT.2020"),
+            "bt.601-525" | "bt.601-625" | "bt.601" => Some("BT.601"),
+            "display-p3" => Some("Display P3"),
+            "dci-p3" => Some("DCI-P3"),
+            "srgb" => Some("sRGB"),
+            other => Some(other),
+        }
+    }
+    fn pretty_gamma(s: &str) -> Option<&str> {
+        match s.trim() {
+            "" | "unknown" | "auto" => None,
+            "bt.1886" => Some("BT.1886"),
+            "pq" => Some("PQ"),
+            "hlg" => Some("HLG"),
+            "srgb" => Some("sRGB"),
+            "linear" => Some("Linear"),
+            "gamma2.2" => Some("γ2.2"),
+            "gamma2.4" => Some("γ2.4"),
+            other => Some(other),
+        }
+    }
+    fn pretty_levels(s: &str) -> Option<&str> {
+        match s.trim() {
+            "limited" => Some("Limited"),
+            "full" => Some("Full"),
+            _ => None,
+        }
+    }
+
+    let mut parts: Vec<&str> = Vec::new();
+    if let Some(p) = pretty_prim(primaries).or_else(|| pretty_prim(matrix)) {
+        parts.push(p);
+    }
+    if let Some(g) = pretty_gamma(gamma) {
+        parts.push(g);
+    }
+    if let Some(l) = pretty_levels(levels) {
+        parts.push(l);
+    }
+    parts.join(" · ")
 }
 
 impl Drop for Media {

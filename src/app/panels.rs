@@ -58,7 +58,7 @@ pub(super) fn playlist(ui: &mut Ui, app: &mut MuxApp) {
     }
 
     // List body.
-    let info_h = if app.selected.is_some() { 268.0 } else { 0.0 };
+    let info_h = if app.selected.is_some() { 288.0 } else { 0.0 };
     let body = Rect::from_min_max(
         pos2(ui.min_rect().min.x, head.max.y + 4.0),
         pos2(ui.max_rect().max.x, ui.max_rect().max.y - 34.0 - info_h),
@@ -256,6 +256,14 @@ fn media_info_panel(ui: &mut Ui, app: &MuxApp, rect: Rect) {
                 "—".into()
             } else {
                 m.codec.clone()
+            },
+        ));
+        rows.push((
+            app.t("色彩", "Color"),
+            if m.color.is_empty() {
+                "—".into()
+            } else {
+                m.color.clone()
             },
         ));
         rows.push((

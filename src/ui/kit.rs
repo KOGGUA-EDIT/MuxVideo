@@ -65,7 +65,7 @@ fn text_styles() -> BTreeMap<TextStyle, FontId> {
         (TextStyle::Body, FontId::proportional(14.0)),
         (TextStyle::Button, FontId::proportional(14.0)),
         (TextStyle::Heading, FontId::proportional(24.0)),
-        (TextStyle::Monospace, FontId::monospace(13.0)),
+        (TextStyle::Monospace, FontId::monospace(12.0)),
         (style_name("display"), FontId::proportional(32.0)),
         (style_name("headline"), FontId::proportional(28.0)),
         (style_name("headline_small"), FontId::proportional(24.0)),
@@ -92,8 +92,8 @@ fn spacing() -> egui::Spacing {
         item_spacing: Vec2::new(8.0, 8.0),
         window_margin: Margin::same(24),
         menu_margin: Margin::same(8),
-        // 40 dp button with a 24 px side padding (M3 filled button anatomy).
-        button_padding: Vec2::new(24.0, 10.0),
+        // 40 dp button with 16 dp horizontal padding (M3 Expressive Small button).
+        button_padding: Vec2::new(16.0, 10.0),
         interact_size: Vec2::new(44.0, 44.0),
         slider_width: 220.0,
         slider_rail_height: 4.0,

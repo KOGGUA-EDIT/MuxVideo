@@ -5,10 +5,47 @@
 //! MD3 sliders with a draggable thumb and cards with hover elevation.
 
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, FontId, Rect, Response, Sense, Ui, Vec2, pos2, vec2,
+    self, Align2, Color32, CornerRadius, FontId, Rect, Response, Sense, Stroke, StrokeKind, Ui,
+    Vec2, pos2, vec2,
 };
 
 use crate::ui::Palette;
+
+/// M3 Expressive Fast Spatial spring (`damping = 0.6`, `stiffness = 800`).
+///
+/// Analytical underdamped step response from `0.0` to `1.0` with ~9% subtle
+/// overshoot, settling cleanly in ~0.35 s. Returns `(value, settled)`.
+pub fn expressive_fast_spatial(elapsed_secs: f32) -> (f32, bool) {
+    const DAMPING: f32 = 0.6;
+    const STIFFNESS: f32 = 800.0;
+    const SETTLE_SECS: f32 = 0.38;
+    if elapsed_secs <= 0.0 {
+        return (0.0, false);
+    }
+    if elapsed_secs >= SETTLE_SECS {
+        return (1.0, true);
+    }
+    let omega = STIFFNESS.sqrt(); // ~28.284 rad/s
+    let omega_d = omega * (1.0 - DAMPING * DAMPING).sqrt();
+    let decay = (-DAMPING * omega * elapsed_secs).exp();
+    let angle = omega_d * elapsed_secs;
+    let value = 1.0 - decay * (angle.cos() + (DAMPING / (1.0 - DAMPING * DAMPING).sqrt()) * angle.sin());
+    (value, false)
+}
+
+/// Paints a 2 dp Material 3 keyboard focus ring outside `rect`.
+pub fn paint_focus_ring(ui: &Ui, rect: Rect, radius: CornerRadius, color: Color32) {
+    let ring = rect.expand(2.0);
+    let bump = |r: u8| r.saturating_add(2);
+    let ring_radius = CornerRadius {
+        nw: bump(radius.nw),
+        ne: bump(radius.ne),
+        sw: bump(radius.sw),
+        se: bump(radius.se),
+    };
+    ui.painter()
+        .rect_stroke(ring, ring_radius, Stroke::new(2.0_f32, color), StrokeKind::Outside);
+}
 
 /// M3 ripple: a circle that grows from where the pointer went down and fades
 /// out. Compose calls it `Ripple`; the spec folds it into the press state layer.
@@ -116,6 +153,9 @@ pub fn icon_button(
         palette.on_surface_variant
     };
     glyph(&mut child, icon_size, fg);
+    if response.has_focus() {
+        paint_focus_ring(ui, rect, CornerRadius::same((size * 0.5) as u8), palette.secondary);
+    }
     ripple_round(ui, &response, rect, palette.on_surface);
     response
 }
@@ -136,32 +176,38 @@ pub fn pill_button(
     let galley =
         ui.painter()
             .layout_no_wrap(label.to_owned(), FontId::proportional(14.0), text_color);
-    let icon_w = if icon.is_some() { 18.0 } else { 0.0 };
-    // M3 button: 40 dp tall, full pill, 24 px leading/trailing padding.
-    let pad_x = 24.0;
+    let icon_w = if icon.is_some() { 18.0 + 8.0 } else { 0.0 };
+    // M3E Small (default) button: 40 dp tall, full pill, 16 dp horizontal padding.
+    let pad_x = 16.0;
     let size = vec2(galley.size().x + pad_x * 2.0 + icon_w, 40.0);
     let (rect, response) = ui.allocate_exact_size(size, Sense::click());
     let hover = ui
         .ctx()
         .animate_bool_with_time(response.id, response.hovered(), 0.12);
+    let pressed = ui
+        .ctx()
+        .animate_bool_with_time(response.id.with("press"), response.is_pointer_button_down_on(), 0.08);
     let base = if filled {
         palette.primary
     } else {
         palette.secondary_container
     };
-    // State layer (8 % of the on-colour) instead of lightening the container.
+    // State layer (8 % hover / 10 % pressed of the on-colour).
     let state = if filled {
         palette.on_primary
     } else {
         palette.on_secondary_container
     };
-    let fill = if hover > 0.01 {
-        mix(base, state, hover * 0.08)
+    let state_alpha = (hover * 0.08).max(pressed * 0.10);
+    let fill = if state_alpha > 0.005 {
+        mix(base, state, state_alpha)
     } else {
         base
     };
-    ui.painter()
-        .rect_filled(rect, CornerRadius::same((size.y * 0.5) as u8), fill);
+    // M3E press shape morph: full pill (20 dp) tightens slightly to 12 dp on press.
+    let r = (size.y * 0.5 - pressed * 8.0).round() as u8;
+    let radius = CornerRadius::same(r);
+    ui.painter().rect_filled(rect, radius, fill);
 
     let mut x = rect.min.x + pad_x;
     let cy = rect.center().y;
@@ -175,6 +221,9 @@ pub fn pill_button(
     }
     ui.painter()
         .galley(pos2(x, cy - galley.size().y * 0.5), galley, text_color);
+    if response.has_focus() {
+        paint_focus_ring(ui, rect, radius, palette.secondary);
+    }
     ripple(ui, &response, rect, state);
     response
 }
@@ -206,6 +255,9 @@ pub fn text_button(ui: &mut Ui, palette: &Palette, label: &str) -> Response {
         galley,
         palette.primary,
     );
+    if response.has_focus() {
+        paint_focus_ring(ui, rect, CornerRadius::same(20), palette.secondary);
+    }
     ripple(ui, &response, rect, palette.primary);
     response
 }
@@ -240,26 +292,24 @@ pub fn chip(ui: &mut Ui, palette: &Palette, label: &str, selected: bool) -> Resp
     response
 }
 
-/// State for the sliding selection pill of a [`chip_row`].
+/// Spring animation state for a per-item selection morph.
 #[derive(Clone, Copy)]
-struct PillSlide {
+struct SpringMorph {
     from: f32,
     goal: f32,
     t0: f64,
 }
 
-/// Ease-out cubic: moves quickly at first, then settles. Matches the rail pill.
-fn slide_at(state: &PillSlide, now: f64) -> f32 {
-    const DURATION: f64 = 0.30;
-    let t = ((now - state.t0) / DURATION).clamp(0.0, 1.0) as f32;
-    let eased = 1.0 - (1.0 - t).powi(3);
-    state.from + (state.goal - state.from) * eased
+fn eval_spring(state: &SpringMorph, now: f64) -> (f32, bool) {
+    let (s, settled) = expressive_fast_spatial((now - state.t0) as f32);
+    (state.from + (state.goal - state.from) * s, settled)
 }
 
-/// A row of chips whose selected background slides between items.
+/// M3 Expressive **Connected Button Group** (replaces deprecated Segmented Button).
 ///
-/// Returns the index the user clicked. Chips keep their own rounded shape; only
-/// the highlight travels, so a mode switch reads as motion instead of a blink.
+/// Items sit side-by-side with a crisp 2 dp gap: outer corners are pill-rounded
+/// (20 dp), inner corners are 8 dp, and the selected item springs smoothly into
+/// a full pill (`secondary_container`) with an Expressive Fast Spatial curve.
 pub fn chip_row(
     ui: &mut Ui,
     palette: &Palette,
@@ -268,8 +318,10 @@ pub fn chip_row(
     selected: usize,
 ) -> Option<usize> {
     const HEIGHT: f32 = 40.0;
-    const GAP: f32 = 0.0;
+    const GAP: f32 = 2.0;
     const PAD_X: f32 = 16.0;
+    const OUTER_R: f32 = 20.0;
+    const INNER_R: f32 = 8.0;
     if labels.is_empty() {
         return None;
     }
@@ -288,70 +340,107 @@ pub fn chip_row(
     let total: f32 = widths.iter().sum::<f32>() + GAP * labels.len().saturating_sub(1) as f32;
     let (rect, _) = ui.allocate_exact_size(vec2(total, HEIGHT), Sense::hover());
     let id = ui.id().with(id_salt);
-
     let now = ui.input(|i| i.time);
-    let target = selected as f32;
-    let mut state = ui
-        .data_mut(|d| d.get_temp::<PillSlide>(id))
-        .unwrap_or(PillSlide {
-            from: target,
-            goal: target,
-            t0: now,
-        });
-    if (state.goal - target).abs() > 0.001 {
-        let current = slide_at(&state, now);
-        state = PillSlide {
-            from: current,
-            goal: target,
-            t0: now,
-        };
-    }
-    let pos = slide_at(&state, now);
-    ui.data_mut(|d| d.insert_temp(id, state));
-    if (pos - target).abs() > 0.004 {
-        ui.ctx().request_repaint();
-    }
 
     let mut x = rect.min.x;
-    let mut item_rects = Vec::with_capacity(labels.len());
-    for width in &widths {
-        item_rects.push(Rect::from_min_size(
-            pos2(x, rect.min.y),
-            vec2(*width, HEIGHT),
-        ));
-        x += *width + GAP;
-    }
-
-    // Group track (single rounded container), then the moving pill, then labels.
-    let pill_radius = CornerRadius::same((HEIGHT * 0.5) as u8);
-    ui.painter()
-        .rect_filled(rect, pill_radius, palette.surface_container);
-    let first = pos.floor().clamp(0.0, labels.len() as f32 - 1.0);
-    let second = (first + 1.0).min(labels.len() as f32 - 1.0);
-    let blend = pos - first;
-    let a = item_rects[first as usize];
-    let b = item_rects[second as usize];
-    let highlight = Rect::from_min_max(
-        pos2(a.min.x + (b.min.x - a.min.x) * blend, a.min.y + 4.0),
-        pos2(a.max.x + (b.max.x - a.max.x) * blend, a.max.y - 4.0),
-    );
-    ui.painter()
-        .rect_filled(highlight, pill_radius, palette.secondary_container);
-
     let mut clicked = None;
-    for (index, (item, galley)) in item_rects.iter().zip(galleys).enumerate() {
-        let response = ui.interact(*item, id.with(index), Sense::click());
+    let mut any_animating = false;
+    let last_idx = labels.len() - 1;
+
+    for (index, (width, galley)) in widths.iter().zip(galleys).enumerate() {
+        let item = Rect::from_min_size(pos2(x, rect.min.y), vec2(*width, HEIGHT));
+        x += *width + GAP;
+
+        let item_id = id.with(index);
+        let response = ui.interact(item, item_id, Sense::click());
         if response.clicked() {
             clicked = Some(index);
         }
-        let near = 1.0 - (pos - index as f32).abs().clamp(0.0, 1.0);
-        let color = mix(
+
+        let target = if index == selected { 1.0_f32 } else { 0.0_f32 };
+        let morph_id = item_id.with("sel-spring");
+        let mut morph = ui
+            .data_mut(|d| d.get_temp::<SpringMorph>(morph_id))
+            .unwrap_or(SpringMorph {
+                from: target,
+                goal: target,
+                t0: now,
+            });
+        if (morph.goal - target).abs() > 0.001 {
+            let (cur, _) = eval_spring(&morph, now);
+            morph = SpringMorph {
+                from: cur,
+                goal: target,
+                t0: now,
+            };
+        }
+        let (sel_spring, settled) = eval_spring(&morph, now);
+        ui.data_mut(|d| d.insert_temp(morph_id, morph));
+        if !settled && (morph.goal - morph.from).abs() > 0.001 {
+            any_animating = true;
+        }
+        let sel_color_t = sel_spring.clamp(0.0, 1.0);
+
+        let hover = ui
+            .ctx()
+            .animate_bool_with_time(item_id.with("hover"), response.hovered(), 0.12);
+        let pressed = ui.ctx().animate_bool_with_time(
+            item_id.with("press"),
+            response.is_pointer_button_down_on(),
+            0.08,
+        );
+
+        // Shape morph: outer ends stay pill (20 dp), inner corners morph 8 -> 20 dp
+        // when selected, and tighten slightly on press.
+        let inner_r = (INNER_R + (OUTER_R - INNER_R) * sel_spring - pressed * 3.0).clamp(4.0, OUTER_R);
+        let left_r = if index == 0 {
+            (OUTER_R - pressed * 4.0).clamp(8.0, OUTER_R)
+        } else {
+            inner_r
+        }
+        .round() as u8;
+        let right_r = if index == last_idx {
+            (OUTER_R - pressed * 4.0).clamp(8.0, OUTER_R)
+        } else {
+            inner_r
+        }
+        .round() as u8;
+        let radius = CornerRadius {
+            nw: left_r,
+            sw: left_r,
+            ne: right_r,
+            se: right_r,
+        };
+
+        let base_fill = mix(
+            palette.surface_container,
+            palette.secondary_container,
+            sel_color_t,
+        );
+        let fg = mix(
             palette.on_surface_variant,
             palette.on_secondary_container,
-            near,
+            sel_color_t,
         );
+        let state_alpha = (hover * 0.08).max(pressed * 0.10);
+        let fill = if state_alpha > 0.005 {
+            mix(base_fill, fg, state_alpha)
+        } else {
+            base_fill
+        };
+
+        ui.painter().rect_filled(item, radius, fill);
         ui.painter()
-            .galley(item.center() - galley.size() * 0.5, galley, color);
+            .galley(item.center() - galley.size() * 0.5, galley, fg);
+        if response.has_focus() {
+            paint_focus_ring(ui, item, radius, palette.secondary);
+        }
+        ripple(ui, &response, item, fg);
+    }
+
+    if any_animating {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(16));
     }
     clicked
 }

@@ -265,7 +265,6 @@ impl MuxApp {
     /// landing — the curve the reference screenshot shows) and returns its
     /// current centre y.
     pub(super) fn animate_rail_pill(&mut self, goal: f32, ctx: &egui::Context) -> f32 {
-        const DURATION: f32 = 0.34;
         if !self.rail_pill_ready {
             self.rail_pill = goal;
             self.rail_pill_goal = goal;
@@ -278,11 +277,11 @@ impl MuxApp {
             self.rail_pill_goal = goal;
             self.rail_pill_t0 = Instant::now();
         }
-        let t = (self.rail_pill_t0.elapsed().as_secs_f32() / DURATION).clamp(0.0, 1.0);
-        let eased = 1.0 - (1.0 - t) * (1.0 - t) * (1.0 - t);
-        self.rail_pill = self.rail_pill_from + (self.rail_pill_goal - self.rail_pill_from) * eased;
-        if t < 1.0 {
-            ctx.request_repaint();
+        let elapsed = self.rail_pill_t0.elapsed().as_secs_f32();
+        let (spring, settled) = controls::expressive_fast_spatial(elapsed);
+        self.rail_pill = self.rail_pill_from + (self.rail_pill_goal - self.rail_pill_from) * spring;
+        if !settled && (self.rail_pill_goal - self.rail_pill_from).abs() > 0.5 {
+            ctx.request_repaint_after(Duration::from_millis(16));
         }
         self.rail_pill
     }

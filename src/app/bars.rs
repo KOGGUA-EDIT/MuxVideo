@@ -49,20 +49,26 @@ fn file_badge(ui: &mut Ui, app: &mut MuxApp, plane: Target) {
     let hover = ui
         .ctx()
         .animate_bool_with_time(response.id, response.hovered(), 0.1);
-    let fill = if path.is_some() {
+    let pressed = ui.ctx().animate_bool_with_time(
+        response.id.with("press"),
+        response.is_pointer_button_down_on(),
+        0.08,
+    );
+    let base_fill = if path.is_some() {
         p.surface_container
     } else {
         p.surface_container_low
     };
-    ui.painter().rect_filled(
-        rect,
-        CornerRadius::same(8),
-        if hover > 0.0 {
-            fill.gamma_multiply(1.15)
-        } else {
-            fill
-        },
-    );
+    let state_alpha = (hover * 0.08).max(pressed * 0.10);
+    let fill = if state_alpha > 0.005 {
+        controls::mix(base_fill, p.on_surface, state_alpha)
+    } else {
+        base_fill
+    };
+    ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
+    if response.has_focus() {
+        controls::paint_focus_ring(ui, rect, CornerRadius::same(8), p.secondary);
+    }
     let tag_rect = Rect::from_min_size(rect.min + vec2(6.0, 6.0), vec2(20.0, 20.0));
     ui.painter().rect_filled(
         tag_rect,
@@ -124,9 +130,9 @@ fn window_button(
         let fill = if danger {
             p.error.gamma_multiply(0.9 * hover)
         } else {
-            p.surface_container_highest.gamma_multiply(hover)
+            p.on_surface.gamma_multiply(0.08 * hover)
         };
-        ui.painter().rect_filled(rect, CornerRadius::same(6), fill);
+        ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
     }
     let fg = if danger && response.hovered() {
         p.on_error
@@ -467,7 +473,7 @@ pub(super) fn stage_area(ui: &mut Ui, app: &mut MuxApp) {
                 // Space still free after the left hand chips; the sync read-out
                 // and the mode hint only appear when they will not collide.
                 let room = ui.available_width();
-                let cam = icon_button(ui, &p, 34.0, false, icons::camera);
+                let cam = icon_button(ui, &p, 40.0, false, icons::camera);
                 if cam.hovered() {
                     app.hover_hint = Some(app.t(
                         "截图：把当前帧存到「图片」文件夹（S）",
@@ -671,30 +677,53 @@ fn drift_text(app: &MuxApp) -> Option<String> {
     Some(format!("同步 Δ{:+.0} ms", drift * 1000.0))
 }
 
-/// Big primary play button (M3 FAB: 56 dp, 16 dp corner).
+/// Primary M3 Expressive play/pause toggle button (56×56 dp):
+/// round (28 dp) while paused, springs to squircle (16 dp) while playing,
+/// and tightens to 12 dp while pressed.
 fn play_button(ui: &mut Ui, app: &MuxApp) -> egui::Response {
     let p = app.palette.clone();
     let (rect, response) = ui.allocate_exact_size(Vec2::splat(56.0), Sense::click());
     let hover = ui
         .ctx()
-        .animate_bool_with_time(response.id, response.hovered(), 0.12);
-    let fill = if response.hovered() {
-        controls::mix(p.primary, p.on_primary, hover * 0.08)
+        .animate_bool_with_time(response.id.with("hover"), response.hovered(), 0.12);
+    let pressed = ui.ctx().animate_bool_with_time(
+        response.id.with("press"),
+        response.is_pointer_button_down_on(),
+        0.08,
+    );
+
+    // Expressive Fast Spatial spring for play <-> pause corner morph.
+    let now = ui.input(|i| i.time);
+    let target = if app.is_playing() { 1.0_f32 } else { 0.0_f32 };
+    let morph_id = response.id.with("play-shape-spring");
+    let (mut from, mut goal, mut t0) = ui
+        .data_mut(|d| d.get_temp::<(f32, f32, f64)>(morph_id))
+        .unwrap_or((target, target, now));
+    if (goal - target).abs() > 0.001 {
+        let (s, _) = controls::expressive_fast_spatial((now - t0) as f32);
+        from += (goal - from) * s;
+        goal = target;
+        t0 = now;
+    }
+    let (s, settled) = controls::expressive_fast_spatial((now - t0) as f32);
+    let playing_t = from + (goal - from) * s;
+    ui.data_mut(|d| d.insert_temp(morph_id, (from, goal, t0)));
+    if !settled && (goal - from).abs() > 0.001 {
+        ui.ctx()
+            .request_repaint_after(std::time::Duration::from_millis(16));
+    }
+
+    let base_r = 28.0 + (16.0 - 28.0) * playing_t;
+    let r = (base_r + (12.0 - base_r) * pressed).clamp(12.0, 28.0).round() as u8;
+    let radius = CornerRadius::same(r);
+
+    let state_alpha = (hover * 0.08).max(pressed * 0.10);
+    let fill = if state_alpha > 0.005 {
+        controls::mix(p.primary, p.on_primary, state_alpha)
     } else {
         p.primary
     };
-    ui.painter()
-        .rect_filled(rect, CornerRadius::same(16), fill);
-    // Focus/hover state layer ring at 8 % — no shadow (elevation 0 surfaces).
-    if response.hovered() {
-        ui.painter().rect_filled(
-            rect.expand(2.0),
-            CornerRadius::same(18),
-            p.primary.gamma_multiply(0.10),
-        );
-        ui.painter()
-            .rect_filled(rect, CornerRadius::same(16), fill);
-    }
+    ui.painter().rect_filled(rect, radius, fill);
     let icon_rect = Rect::from_center_size(rect.center(), Vec2::splat(24.0));
     let mut child = ui.new_child(
         UiBuilder::new()
@@ -705,6 +734,9 @@ fn play_button(ui: &mut Ui, app: &MuxApp) -> egui::Response {
         icons::pause(&mut child, 24.0, p.on_primary);
     } else {
         icons::play(&mut child, 24.0, p.on_primary);
+    }
+    if response.has_focus() {
+        controls::paint_focus_ring(ui, rect, radius, p.secondary);
     }
     controls::ripple(ui, &response, rect, p.on_primary);
     response
@@ -1007,6 +1039,9 @@ fn speed_chip(ui: &mut Ui, app: &mut MuxApp, p: &crate::ui::Palette) -> SpeedChi
     };
     let fill = controls::mix(base, p.on_surface, hover * 0.08);
     ui.painter().rect_filled(rect, CornerRadius::same(8), fill);
+    if resp.has_focus() {
+        controls::paint_focus_ring(ui, rect, CornerRadius::same(8), p.secondary);
+    }
     let fg = if lit {
         p.on_secondary_container
     } else {
@@ -1114,7 +1149,7 @@ fn speed_menu(ui: &mut Ui, app: &mut MuxApp, p: &crate::ui::Palette, chip: Speed
         if hovered {
             painter.rect_filled(
                 item,
-                CornerRadius::same(10),
+                CornerRadius::same(8),
                 p.on_surface.gamma_multiply(0.08),
             );
         }
